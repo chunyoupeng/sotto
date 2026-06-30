@@ -1,4 +1,20 @@
+<div align="center">
+
+<img src="Resources/icon.svg" width="120" alt="Sotto icon" />
+
 # Sotto
+
+**Hold a key, speak, and your words appear — transcribed on-device, refined by an LLM, typed straight into the focused field.**
+
+[![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-0a84ff?logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-required-111111?logo=apple&logoColor=white)](https://support.apple.com/en-us/116943)
+[![Swift](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)](https://swift.org)
+[![MLX](https://img.shields.io/badge/inference-MLX-9b6cf5)](https://github.com/ml-explore/mlx)
+[![License: MIT](https://img.shields.io/badge/license-MIT-30c474)](LICENSE)
+
+</div>
+
+---
 
 **Sotto** is a macOS menu-bar dictation app for Apple Silicon. Hold a hotkey,
 speak, and your words are transcribed on-device and injected straight into
@@ -9,29 +25,29 @@ normalizes numbers, keeps technical terms in English) before the text lands.
 The name is Italian for *"softly / in a whisper"* — the app sits quietly in the
 menu bar until you need it.
 
-> Requires **Apple Silicon** (the speech model runs on MLX/Metal) and
+> 🍎 Requires **Apple Silicon** (the speech model runs on MLX/Metal) and
 > **macOS 14 (Sonoma) or later**. The overlay uses the native Liquid Glass
 > effect on macOS 26+, with a graceful fallback on older releases.
 
-## Features
+## ✨ Features
 
-- **Push-to-talk dictation** — hold a key to record, release to transcribe.
+- 🎙️ **Push-to-talk dictation** — hold a key to record, release to transcribe.
   A quick tap latches into hands-free "keep listening" mode until you tap again.
-- **On-device speech recognition** — a local [Qwen3-ASR](https://huggingface.co/collections/mlx-community)
+- 🔒 **On-device speech recognition** — a local [Qwen3-ASR](https://huggingface.co/collections/mlx-community)
   model runs in a resident MLX sidecar, so audio never leaves your machine and
   each utterance pays only inference cost (~0.5 s), not model-load cost.
-- **Optional LLM refinement** — point it at any OpenAI-compatible chat endpoint
+- 🪄 **Optional LLM refinement** — point it at any OpenAI-compatible chat endpoint
   to polish the raw transcript. The system prompt lives in a plain-text file you
   can edit by hand and takes effect on the next utterance, no restart needed.
-- **Direct text injection** — the result is typed into the frontmost app's
+- ⌨️ **Direct text injection** — the result is typed into the frontmost app's
   focused field via the Accessibility API.
-- **Dashboard** — today's stats, a 7-day chart, lifetime totals, and a scrollable
-  history where every entry keeps the original audio (playable), the raw ASR
-  transcript, and the refined text side by side.
-- **Configurable hotkeys** — the trigger can be Fn, a bare modifier (e.g. Right ⌘),
-  or any key + modifier combination.
+- 📊 **Dashboard** — today's stats, a 7-day chart, lifetime totals, and a
+  scrollable history where every entry keeps the original audio (playable), the
+  raw ASR transcript, and the refined text side by side.
+- 🎛️ **Configurable hotkeys** — the trigger can be Fn, a bare modifier (e.g.
+  Right ⌘), or any key + modifier combination.
 
-## Architecture
+## 🧩 Architecture
 
 ```
 ┌──────────────────────────────┐        stdin/stdout (JSON lines)
@@ -61,15 +77,15 @@ History and saved audio live separately under
 `~/Library/Application Support/Sotto/`; logs are written to
 `~/Library/Logs/Sotto.log`.
 
-## Requirements
+## 📋 Requirements
 
-- Apple Silicon Mac
-- macOS 14.0 (Sonoma) or later
-- Xcode Command Line Tools (for `swift build`)
-- For development / freezing the engine: Python 3 and the MLX speech stack
+- 🖥️ Apple Silicon Mac
+- 🍎 macOS 14.0 (Sonoma) or later
+- 🛠️ Xcode Command Line Tools (for `swift build`)
+- 🐍 For development / freezing the engine: Python 3 and the MLX speech stack
   (`mlx`, `mlx-audio`) in a local `.venv`
 
-## Build & Run
+## 🚀 Build & Run
 
 ```bash
 make build    # build the Sotto.app bundle
@@ -92,12 +108,12 @@ make install  # build and install into /Applications
 On first launch, grant **Accessibility** (for the global hotkey and text
 injection) and **Microphone** permissions when prompted.
 
-## Configuration
+## ⚙️ Configuration
 
 Everything is editable from the menu-bar **Settings** window, or directly in
 `~/.sotto/config.json`.
 
-**Switching the speech model.** Drop a model (or a symlink to one) under
+**🔁 Switching the speech model.** Drop a model (or a symlink to one) under
 `~/.sotto/models/`, then set `asrModelPath` to it and relaunch Sotto so the
 sidecar reloads:
 
@@ -109,16 +125,16 @@ sidecar reloads:
 Larger models (e.g. 1.7B) are generally more accurate but slower and heavier;
 smaller / higher-precision quants trade accuracy for speed. Pick per your taste.
 
-**LLM refinement.** Set `llmEnabled`, `llmAPIBaseURL`, optional `llmAPIKey`, and
-`llmModel`. Edit the prompt in `~/.sotto/prompt.txt` — it's read fresh on every
-utterance.
+**🪄 LLM refinement.** Set `llmEnabled`, `llmAPIBaseURL`, optional `llmAPIKey`,
+and `llmModel`. Edit the prompt in `~/.sotto/prompt.txt` — it's read fresh on
+every utterance.
 
-## Credits
+## 🙏 Credits
 
 Sotto began as a fork of [yetone/voice-input-dist](https://github.com/yetone/voice-input-dist)
 and has since been substantially rewritten. Thanks to the original author for
 the starting point.
 
-## License
+## 📄 License
 
 Released under the [MIT License](LICENSE) © 2026 Chunyou Peng.
