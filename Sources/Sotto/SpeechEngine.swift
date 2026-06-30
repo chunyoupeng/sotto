@@ -1,12 +1,12 @@
 import AVFoundation
 import Foundation
 
-private let logger_subsystem = "com.yetone.VoiceInput"
+private let logger_subsystem = "com.chunyoupeng.Sotto"
 
 private func logToFile(_ message: String) {
     let msg = "[\(ISO8601DateFormatter().string(from: Date()))] [SpeechEngine] \(message)\n"
     let logURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/VoiceInput.log")
+        .appendingPathComponent("Library/Logs/Sotto.log")
     if let handle = try? FileHandle(forWritingTo: logURL) {
         handle.seekToEndOfFile()
         handle.write(msg.data(using: .utf8)!)
@@ -48,7 +48,7 @@ final class SpeechEngine {
 
     private var process: Process?
     private var stdinHandle: FileHandle?
-    private let daemonQueue = DispatchQueue(label: "com.yetone.VoiceInput.asr")
+    private let daemonQueue = DispatchQueue(label: "com.chunyoupeng.Sotto.asr")
     private var isReady = false
     private var nextID = 0
     private var pending: [Int: (Result<String, Error>) -> Void] = [:]
@@ -259,7 +259,7 @@ final class SpeechEngine {
         if let url = Bundle.main.url(forResource: "asr_server", withExtension: "py") {
             return url.path
         }
-        let dev = "/Users/pengchunyou/Projects/voice-input-dist/Resources/asr_server.py"
+        let dev = "/Users/pengchunyou/Projects/sotto/Resources/asr_server.py"
         return FileManager.default.fileExists(atPath: dev) ? dev : nil
     }
 

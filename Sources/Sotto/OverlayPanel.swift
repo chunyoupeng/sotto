@@ -34,51 +34,29 @@ final class OverlayPanel: NSPanel {
 
         let cv = contentView!
         cv.wantsLayer = true
+        let radius = capsuleHeight / 2
 
-        // Soft outer shadow.
+        // Soft outer shadow so the capsule floats over any background.
         let shadowHost = NSView(frame: cv.bounds)
         shadowHost.autoresizingMask = [.width, .height]
         shadowHost.wantsLayer = true
-        shadowHost.layer?.shadowColor = NSColor.black.withAlphaComponent(0.5).cgColor
+        shadowHost.layer?.shadowColor = NSColor.black.withAlphaComponent(0.35).cgColor
         shadowHost.layer?.shadowOffset = CGSize(width: 0, height: -3)
-        shadowHost.layer?.shadowRadius = 22
+        shadowHost.layer?.shadowRadius = 18
         shadowHost.layer?.shadowOpacity = 1
         cv.addSubview(shadowHost)
 
-        // Vibrancy capsule (dark glass).
-        let effect = SottoTheme.makeVibrancyContainer(
-            frame: cv.bounds, cornerRadius: capsuleHeight / 2)
-        shadowHost.addSubview(effect)
+        // Content: waveform + live caption. Laid out inside whatever glass host
+        // wraps it (native Liquid Glass on macOS 26+, vibrancy on older).
+        let content = NSView(frame: cv.bounds)
+        content.autoresizingMask = [.width, .height]
 
-        // Inner hairline border.
-        let border = NSView(frame: cv.bounds)
-        border.autoresizingMask = [.width, .height]
-        border.wantsLayer = true
-        border.layer?.cornerRadius = capsuleHeight / 2
-        border.layer?.borderWidth = 0.5
-        border.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
-        effect.addSubview(border)
-
-        // Top glass highlight: a thin vertical sheen along the capsule's top
-        // edge for depth (the "lit edge" of a glass pill).
-        let sheen = CAGradientLayer()
-        sheen.colors = [
-            NSColor.white.withAlphaComponent(0.20).cgColor,
-            NSColor.white.withAlphaComponent(0.0).cgColor,
-        ]
-        sheen.startPoint = CGPoint(x: 0.5, y: 0)
-        sheen.endPoint = CGPoint(x: 0.5, y: 1)
-        sheen.frame = CGRect(x: 0, y: cv.bounds.height - 14, width: cv.bounds.width, height: 14)
-        sheen.autoresizingMask = [.layerWidthSizable, .layerMinYMargin]
-        effect.layer?.addSublayer(sheen)
-
-        // Layout: waveform + live caption.
         let stack = NSStackView()
         stack.orientation = .horizontal
         stack.spacing = gap
         stack.alignment = .centerY
         stack.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(stack)
+        content.addSubview(stack)
 
         waveformView.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(waveformView)
@@ -93,10 +71,37 @@ final class OverlayPanel: NSPanel {
         NSLayoutConstraint.activate([
             waveformView.widthAnchor.constraint(equalToConstant: waveSize),
             waveformView.heightAnchor.constraint(equalToConstant: 44),
-            stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: hPad),
-            stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -hPad),
-            stack.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: hPad),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -hPad),
+            stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
         ])
+
+        if #available(macOS 26.0, *) {
+            // Native Liquid Glass: the `.clear` style reads far more translucent
+            // than stacked vibrancy, and there's no manual top sheen (which looked
+            // like an odd bright bar). A faint dark tint keeps the caption legible.
+            let glass = NSGlassEffectView(frame: cv.bounds)
+            glass.autoresizingMask = [.width, .height]
+            glass.style = .clear
+            glass.cornerRadius = radius
+            glass.tintColor = NSColor.black.withAlphaComponent(0.16)
+            glass.contentView = content
+            shadowHost.addSubview(glass)
+        } else {
+            // Fallback for older macOS: dark vibrancy capsule + hairline border.
+            let effect = SottoTheme.makeVibrancyContainer(frame: cv.bounds, cornerRadius: radius)
+            shadowHost.addSubview(effect)
+
+            let border = NSView(frame: cv.bounds)
+            border.autoresizingMask = [.width, .height]
+            border.wantsLayer = true
+            border.layer?.cornerRadius = radius
+            border.layer?.borderWidth = 0.5
+            border.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+            effect.addSubview(border)
+
+            effect.addSubview(content)
+        }
     }
 
     // MARK: - Public

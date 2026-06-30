@@ -1,7 +1,5 @@
-# Display/product name is "Sotto"; the Swift executable target is still
-# "VoiceInput" (kept so the bundle id / TCC permissions stay stable).
 APP_NAME := Sotto
-BIN_NAME := VoiceInput
+BIN_NAME := Sotto
 APP_BUNDLE := $(APP_NAME).app
 BUILD_DIR := $(shell swift build -c release --show-bin-path 2>/dev/null || echo .build/release)
 
@@ -21,6 +19,17 @@ MODEL_DEST := $(MODEL_DIR)/$(MODEL_NAME)
 # preserves Accessibility/Microphone permissions across rebuilds (grant once).
 # Falls back to ad-hoc ("-") if the identity isn't present.
 CODESIGN_ID ?= VoiceInput Local Signing
+
+# PyInstaller relocates `libmlx.dylib` to `_internal/` but leaves `mlx.metallib`
+# at `_internal/mlx/lib/`. MLX finds its metallib next to libmlx.dylib via
+# dladdr, so without this the GPU backend fails with "Failed to load the default
+# metallib". Drop a relative symlink beside libmlx.dylib. Arg 1: asr_engine dir.
+define COLOCATE_METALLIB
+	if [ -f "$(1)/_internal/mlx/lib/mlx.metallib" ] && [ ! -e "$(1)/_internal/mlx.metallib" ]; then \
+		ln -sf mlx/lib/mlx.metallib "$(1)/_internal/mlx.metallib"; \
+		echo "Linked mlx.metallib beside libmlx.dylib"; \
+	fi
+endef
 
 # Re-usable signing recipe.
 define SIGN
@@ -48,6 +57,7 @@ build:
 	@if [ -d "$(ENGINE_DIR)" ]; then \
 		echo "Bundling frozen ASR engine"; \
 		cp -R "$(ENGINE_DIR)" $(APP_BUNDLE)/Contents/Resources/asr_engine; \
+		$(call COLOCATE_METALLIB,$(APP_BUNDLE)/Contents/Resources/asr_engine); \
 	else \
 		echo "⚠️  No frozen engine ($(ENGINE_DIR)); app will fall back to dev venv. Run 'make engine'."; \
 	fi
@@ -61,6 +71,7 @@ engine:
 		--distpath build_pyi/dist --workpath build_pyi/work --specpath build_pyi \
 		--collect-all mlx --collect-all mlx_audio --collect-submodules mlx_audio \
 		Resources/asr_server.py
+	@$(call COLOCATE_METALLIB,$(ENGINE_DIR))
 	@echo "✅ Engine at $(ENGINE_DIR)"
 
 # Expose the local model under ~/.sotto/models. Prefer a symlink for dev/local

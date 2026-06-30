@@ -39,9 +39,11 @@ final class DashboardViewController: NSViewController {
 
         // History table
         table.headerView = nil
-        table.rowHeight = 46
+        table.rowHeight = 104
+        table.intercellSpacing = NSSize(width: 0, height: 8)
         table.backgroundColor = .clear
-        table.style = .inset
+        table.style = .plain
+        table.selectionHighlightStyle = .none
         let col = NSTableColumn(identifier: .init("main"))
         col.resizingMask = .autoresizingMask
         table.addTableColumn(col)
@@ -57,7 +59,7 @@ final class DashboardViewController: NSViewController {
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
 
-        let historyCaption = NSTextField(labelWithString: "历史记录（双击播放音频）")
+        let historyCaption = NSTextField(labelWithString: "历史记录（点 ▶ 播放原音频）")
         historyCaption.font = .systemFont(ofSize: 11)
         historyCaption.textColor = SottoTheme.secondaryLabelColor
 
@@ -146,16 +148,31 @@ extension DashboardViewController: NSTableViewDataSource, NSTableViewDelegate {
         let record = rows[row]
         let id = NSUserInterfaceItemIdentifier("cell")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? RecordCell) ?? RecordCell(identifier: id)
-        cell.configure(with: record)
+        let hasAudio = RecordStore.shared.audioURL(for: record) != nil
+        cell.configure(with: record, hasAudio: hasAudio) { [weak self] in
+            self?.play(record: record)
+        }
         return cell
+    }
+
+    private func play(record: DictationRecord) {
+        guard let url = RecordStore.shared.audioURL(for: record) else { return }
+        player = try? AVAudioPlayer(contentsOf: url)
+        player?.play()
     }
 }
 
-/// A two-line history cell: refined text on top, metadata below.
+/// A card history cell showing all three artifacts of one dictation:
+/// the refined text (top, prominent), the raw ASR transcript (middle, dimmed),
+/// and a play button for the original audio (when saved), plus a metadata line.
 private final class RecordCell: NSView {
-    private let textLabel = NSTextField(labelWithString: "")
+    private let card = NSView()
+    private let refinedLabel = NSTextField(labelWithString: "")
+    private let rawLabel = NSTextField(wrappingLabelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
-    private let separator = CALayer()
+    private let playButton = NSButton()
+    private var onPlay: (() -> Void)?
+
     private static let timeFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm"; return f
     }()
@@ -165,45 +182,90 @@ private final class RecordCell: NSView {
         self.identifier = identifier
         wantsLayer = true
 
-        textLabel.font = .systemFont(ofSize: 13)
-        textLabel.lineBreakMode = .byTruncatingTail
-        textLabel.maximumNumberOfLines = 1
-        textLabel.textColor = SottoTheme.primaryLabelColor
+        SottoTheme.styleAsCard(card)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+
+        // Refined text — the headline.
+        refinedLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        refinedLabel.lineBreakMode = .byTruncatingTail
+        refinedLabel.maximumNumberOfLines = 2
+        refinedLabel.textColor = SottoTheme.primaryLabelColor
+        refinedLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // Raw ASR transcript — secondary, so you can compare the model's output
+        // against the refined result.
+        rawLabel.font = .systemFont(ofSize: 11)
+        rawLabel.lineBreakMode = .byTruncatingTail
+        rawLabel.maximumNumberOfLines = 1
+        rawLabel.textColor = SottoTheme.secondaryLabelColor
+        rawLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         metaLabel.font = .systemFont(ofSize: 10)
         metaLabel.textColor = SottoTheme.secondaryLabelColor
 
-        separator.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        // Play button for the original audio.
+        playButton.bezelStyle = .circular
+        playButton.isBordered = false
+        playButton.imagePosition = .imageOnly
+        playButton.image = NSImage(systemSymbolName: "play.circle.fill",
+                                    accessibilityDescription: "播放原音频")
+        playButton.contentTintColor = NSColor(cgColor: SottoTheme.accent)
+        playButton.target = self
+        playButton.action = #selector(playTapped)
+        playButton.translatesAutoresizingMaskIntoConstraints = false
+        playButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        let stack = NSStackView(views: [textLabel, metaLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        let textStack = NSStackView(views: [refinedLabel, rawLabel, metaLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 3
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.setHuggingPriority(.defaultLow, for: .horizontal)
+
+        card.addSubview(textStack)
+        card.addSubview(playButton)
+
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            textStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            textStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            textStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+            textStack.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -10),
+
+            playButton.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            playButton.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            playButton.widthAnchor.constraint(equalToConstant: 26),
+            playButton.heightAnchor.constraint(equalToConstant: 26),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func layout() {
-        super.layout()
-        if separator.superlayer == nil {
-            layer?.addSublayer(separator)
-        }
-        separator.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 0.5)
-    }
+    @objc private func playTapped() { onPlay?() }
 
-    func configure(with r: DictationRecord) {
-        textLabel.stringValue = r.refinedText.isEmpty ? "（空）" : r.refinedText
-        let audio = r.audioFileName != nil ? "🎵 " : ""
+    func configure(with r: DictationRecord, hasAudio: Bool, onPlay: @escaping () -> Void) {
+        self.onPlay = onPlay
+        refinedLabel.stringValue = r.refinedText.isEmpty ? "（空）" : "✨ \(r.refinedText)"
+
+        // Only show the raw line when it actually differs from the refined text.
+        if !r.rawText.isEmpty && r.rawText != r.refinedText {
+            rawLabel.stringValue = "识别原文：\(r.rawText)"
+            rawLabel.isHidden = false
+        } else {
+            rawLabel.isHidden = true
+        }
+
         metaLabel.stringValue = String(
-            format: "%@%@ · %d 字 · %.1fs · %.0f 字/分",
-            audio, RecordCell.timeFmt.string(from: r.date),
+            format: "%@ · %d 字 · %.1fs · %.0f 字/分",
+            RecordCell.timeFmt.string(from: r.date),
             r.charCount, r.durationSeconds, r.charsPerMinute)
+
+        playButton.isHidden = !hasAudio
     }
 }
 

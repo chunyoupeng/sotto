@@ -105,7 +105,7 @@ final class KeyMonitor {
                         holdActive = false
                         DispatchQueue.main.async { [weak self] in self?.onHoldUp?() }
                         if shouldSuppress(hk) { return nil }
-                    } else if shouldSuppress(hk) && !hk.isModifierKey {
+                    } else if down && shouldSuppress(hk) && !hk.isModifierKey {
                         // swallow autorepeat keyDowns for a held regular key
                         return nil
                     }
@@ -121,10 +121,10 @@ final class KeyMonitor {
                         toggleActive = true
                         DispatchQueue.main.async { [weak self] in self?.onToggleDown?() }
                         if shouldSuppress(tk) { return nil }
-                    } else if !down {
+                    } else if !down && toggleActive {
                         toggleActive = false
                         if shouldSuppress(tk) { return nil }
-                    } else if shouldSuppress(tk) && !tk.isModifierKey {
+                    } else if down && shouldSuppress(tk) && !tk.isModifierKey {
                         return nil
                     }
                 }
@@ -139,10 +139,10 @@ final class KeyMonitor {
                         dashboardActive = true
                         DispatchQueue.main.async { [weak self] in self?.onDashboardDown?() }
                         if shouldSuppress(dk) { return nil }
-                    } else if !down {
+                    } else if !down && dashboardActive {
                         dashboardActive = false
                         if shouldSuppress(dk) { return nil }
-                    } else if shouldSuppress(dk) && !dk.isModifierKey {
+                    } else if down && shouldSuppress(dk) && !dk.isModifierKey {
                         return nil
                     }
                 }
@@ -166,12 +166,17 @@ final class KeyMonitor {
         }
         // Regular key.
         guard keyCode == hk.keyCode else { return nil }
-        if type == .keyDown {
-            return (modifiersMatch(hk.modifiers, flags), true)
-        } else if type == .keyUp {
+        switch type {
+        case .keyDown:
+            // Only claim this keystroke when the required modifiers are held.
+            // Otherwise it's an ordinary press (e.g. a bare "d") that must pass
+            // through untouched — claiming it here would swallow the key entirely.
+            return modifiersMatch(hk.modifiers, flags) ? (true, true) : nil
+        case .keyUp:
             return (false, true)
+        default:
+            return nil
         }
-        return nil
     }
 
     /// True if exactly the required device-independent modifiers are held.

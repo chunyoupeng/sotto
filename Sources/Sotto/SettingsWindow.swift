@@ -3,8 +3,8 @@ import AppKit
 extension Notification.Name {
     /// Posted while a hotkey is being recorded so the global key tap can pause
     /// (otherwise it would intercept Fn and fight the recorder for events).
-    static let hotkeyRecordingStarted = Notification.Name("VoiceInput.hotkeyRecordingStarted")
-    static let hotkeyRecordingStopped = Notification.Name("VoiceInput.hotkeyRecordingStopped")
+    static let hotkeyRecordingStarted = Notification.Name("Sotto.hotkeyRecordingStarted")
+    static let hotkeyRecordingStopped = Notification.Name("Sotto.hotkeyRecordingStopped")
 }
 
 /// A button that captures a global hotkey. Click it, then press the desired key

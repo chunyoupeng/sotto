@@ -44,8 +44,10 @@ enum AppSettings {
         set { SottoConfig.setCodable(newValue, forKey: "dashboardHotkey") }
     }
 
+    // Off by default: the dashboard is reachable from the menu-bar icon, so a
+    // global hotkey isn't needed and only risks shadowing a normal key.
     static var dashboardEnabled: Bool {
-        get { SottoConfig.bool("dashboardEnabled") ?? true }
+        get { SottoConfig.bool("dashboardEnabled") ?? false }
         set { SottoConfig.set(newValue, forKey: "dashboardEnabled") }
     }
 
@@ -108,6 +110,6 @@ enum AppSettings {
     }
 
     /// Dev-only fallbacks (this machine), used when nothing else resolves.
-    static let devPythonPath = "/Users/pengchunyou/Projects/voice-input-dist/.venv/bin/python3"
+    static let devPythonPath = "/Users/pengchunyou/Projects/sotto/.venv/bin/python3"
     static let devModelPath = "/Users/pengchunyou/.cache/modelscope/hub/models/mlx-community/Qwen3-ASR-0___6B-8bit"
 }

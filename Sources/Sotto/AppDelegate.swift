@@ -31,6 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let code = selectedLocaleCode
         speechEngine.locale = code.isEmpty ? .current : Locale(identifier: code)
 
+        // Touch the store eagerly so its one-time data-dir migration
+        // (VoiceInput → Sotto) runs at launch rather than on first dashboard open.
+        _ = RecordStore.shared
+
         setupStatusBar()
         setupSpeechCallbacks()
         setupDashboard()
@@ -202,15 +206,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusIcon(recording: Bool) {
         guard let button = statusItem.button else { return }
-        let name = recording ? "mic.fill" : "mic"
-        if let image = NSImage(systemSymbolName: name, accessibilityDescription: "Sotto") {
+        // Use a waveform glyph (matching the app icon) instead of `mic`, which
+        // is visually identical to macOS's built-in dictation menu-bar item.
+        let name = recording ? "waveform.circle.fill" : "waveform"
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+        if let image = NSImage(systemSymbolName: name, accessibilityDescription: "Sotto")?
+            .withSymbolConfiguration(config) {
             button.image = image
             button.title = ""
         } else {
             // Text fallback so the item is always visible even if the SF Symbol
             // fails to render.
             button.image = nil
-            button.title = recording ? "🔴" : "🎙"
+            button.title = recording ? "🔴" : "〰️"
         }
         button.contentTintColor = recording ? .systemRed : nil
     }

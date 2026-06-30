@@ -32,11 +32,11 @@ struct DayStats {
 
 /// Persists dictation history as JSON plus the raw audio files, and computes
 /// the statistics shown in the dashboard. All file I/O happens under
-/// `~/Library/Application Support/VoiceInput/`.
+/// `~/Library/Application Support/Sotto/`.
 final class RecordStore {
     static let shared = RecordStore()
 
-    private let queue = DispatchQueue(label: "com.yetone.VoiceInput.records")
+    private let queue = DispatchQueue(label: "com.chunyoupeng.Sotto.records")
     private(set) var records: [DictationRecord] = []
 
     let baseDir: URL
@@ -44,11 +44,19 @@ final class RecordStore {
     private let jsonURL: URL
 
     private init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        baseDir = support.appendingPathComponent("VoiceInput", isDirectory: true)
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        baseDir = support.appendingPathComponent("Sotto", isDirectory: true)
+
+        // One-time migration from the old "VoiceInput" folder name to "Sotto".
+        let legacy = support.appendingPathComponent("VoiceInput", isDirectory: true)
+        if fm.fileExists(atPath: legacy.path) && !fm.fileExists(atPath: baseDir.path) {
+            try? fm.moveItem(at: legacy, to: baseDir)
+        }
+
         audioDir = baseDir.appendingPathComponent("audio", isDirectory: true)
         jsonURL = baseDir.appendingPathComponent("history.json")
-        try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: audioDir, withIntermediateDirectories: true)
         load()
     }
 
