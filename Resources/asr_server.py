@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VoiceInput ASR sidecar daemon.
+Sotto ASR sidecar daemon.
 
 Loads the MLX NeMo streaming ASR model once and keeps it warm in memory,
 then transcribes audio files on demand. The Swift app talks to this process
@@ -26,7 +26,7 @@ import sys
 import traceback
 
 MODEL_ID = os.environ.get(
-    "VOICEINPUT_ASR_MODEL", "mlx-community/Qwen3-ASR-0.6B-8bit"
+    "SOTTO_ASR_MODEL", "mlx-community/Qwen3-ASR-0.6B-8bit"
 )
 
 

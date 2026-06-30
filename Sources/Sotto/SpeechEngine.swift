@@ -86,7 +86,7 @@ final class SpeechEngine {
 
         // Target: 16 kHz mono — what the ASR model expects.
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voiceinput-\(UUID().uuidString).wav")
+            .appendingPathComponent("sotto-\(UUID().uuidString).wav")
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
@@ -277,7 +277,7 @@ final class SpeechEngine {
         proc.executableURL = exe
         proc.arguments = args
         var env = ProcessInfo.processInfo.environment
-        env["VOICEINPUT_ASR_MODEL"] = modelPath()
+        env["SOTTO_ASR_MODEL"] = modelPath()
         env["PYTHONUNBUFFERED"] = "1"
         proc.environment = env
 

@@ -179,7 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let u = audioURL { try? FileManager.default.removeItem(at: u) }
 
-        overlayPanel.showResult("✨ \(refined)")
+        overlayPanel.showResult("⚡ \(refined)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self else { return }
             self.overlayPanel.dismiss()
