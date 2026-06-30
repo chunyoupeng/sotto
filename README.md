@@ -1,6 +1,12 @@
-# VoiceInput
+# Sotto
 
-A macOS menu-bar application that converts speech to text in real time using Apple's built-in Speech Recognition framework. Press a hotkey, speak, and the transcribed text is injected directly into the currently focused text field.
+A macOS menu-bar dictation app backed by a local MLX ASR sidecar. Press a hotkey, speak, and the transcribed text is injected directly into the currently focused text field.
+
+User-owned runtime state lives under `~/.sotto`:
+
+- `config.json` - structured settings
+- `prompt.txt` - editable LLM refinement prompt
+- `models/` - local ASR model storage
 
 
 
@@ -17,6 +23,8 @@ https://github.com/user-attachments/assets/3228f78a-f035-447d-98ef-8826798a122c
 
 ```bash
 make build   # build the .app bundle
+make model   # link/copy the local model into ~/.sotto/models
+make dist    # build the app and verify the ~/.sotto model install
 make run     # build and launch
 make install # copy to /Applications
 make clean   # remove build artifacts
