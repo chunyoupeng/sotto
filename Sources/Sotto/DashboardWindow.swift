@@ -250,7 +250,7 @@ private final class RecordCell: NSView {
 
     func configure(with r: DictationRecord, hasAudio: Bool, onPlay: @escaping () -> Void) {
         self.onPlay = onPlay
-        refinedLabel.stringValue = r.refinedText.isEmpty ? "（空）" : "⚡ \(r.refinedText)"
+        refinedLabel.stringValue = r.refinedText.isEmpty ? "（空）" : r.refinedText
 
         // Only show the raw line when it actually differs from the refined text.
         if !r.rawText.isEmpty && r.rawText != r.refinedText {
