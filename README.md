@@ -121,5 +121,4 @@ the starting point.
 
 ## License
 
-This project does not yet declare a license. Until one is added, all rights are
-reserved by the author.
+Released under the [MIT License](LICENSE) © 2026 Chunyou Peng.
