@@ -150,8 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleFinal(raw: String, audioURL: URL?, duration: TimeInterval) {
         let rawText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawText.isEmpty else {
-            overlayPanel.dismiss()
             if let u = audioURL { try? FileManager.default.removeItem(at: u) }
+            dismissWithNotice("未听到任何声音")
             return
         }
 
@@ -177,11 +177,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func commitResult(raw: String, refined: String, audioURL: URL?, duration: TimeInterval) {
         // Filler-only utterances: the refiner returns "无" (or nothing) when the
         // input was just hesitation sounds. Don't type that into the document or
-        // clutter history — just dismiss silently.
+        // clutter history — just flag it and back out.
         let finalText = refined.trimmingCharacters(in: .whitespacesAndNewlines)
         if finalText.isEmpty || finalText == "无" {
             if let u = audioURL { try? FileManager.default.removeItem(at: u) }
-            overlayPanel.dismiss()
+            dismissWithNotice("无实质内容")
             return
         }
 
@@ -203,6 +203,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if dashboardPopover.isShown { dashboardVC.refresh() }
         if let win = dashboardWindow, win.isVisible { dashboardWindowVC.refresh() }
+    }
+
+    /// Briefly flash a non-error notice in the overlay (no speech heard, or the
+    /// utterance was filler-only) instead of vanishing silently, then dismiss —
+    /// so "nothing to type" still reads as "Sotto heard you," not "Sotto froze."
+    private func dismissWithNotice(_ text: String) {
+        overlayPanel.showCancelled(text)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.overlayPanel.dismiss()
+        }
     }
 
     // MARK: - Status bar

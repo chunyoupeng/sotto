@@ -35,6 +35,12 @@ enum SottoTheme {
             CGColor(red: 0.30, green: 0.92, blue: 0.68, alpha: 1),  // mint
             CGColor(red: 0.13, green: 0.83, blue: 0.93, alpha: 1),  // cyan
         ]
+        /// Nothing to do — no speech heard, or filler-only content. Deliberately
+        /// muted/gray so it doesn't read as an active state or a success.
+        static let cancelled: [CGColor] = [
+            CGColor(red: 0.58, green: 0.60, blue: 0.66, alpha: 1),  // muted gray
+            CGColor(red: 0.42, green: 0.44, blue: 0.50, alpha: 1),  // deeper gray
+        ]
     }
 
     /// A gradient layer painted with `palette`, horizontal by default.

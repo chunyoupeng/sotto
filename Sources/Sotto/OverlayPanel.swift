@@ -156,6 +156,14 @@ final class OverlayPanel: NSPanel {
         updateText(text)
     }
 
+    /// Brief, non-error notice — no speech heard, or the content was filler-only.
+    /// Caller is responsible for dismissing after a short delay.
+    func showCancelled(_ text: String) {
+        waveformView.state = .cancelled
+        waveformView.isListening = false
+        updateText(text)
+    }
+
     func updateAudioLevel(_ level: Float) {
         waveformView.setLevel(CGFloat(level))
     }
@@ -212,7 +220,7 @@ final class OverlayPanel: NSPanel {
 /// mic level; while transcribing/refining it breathes gently; the accent
 /// gradient shifts color per state (cyan → amber → violet → mint).
 final class WaveformView: NSView {
-    enum State { case listening, transcribing, refining, result }
+    enum State { case listening, transcribing, refining, result, cancelled }
 
     /// Whether the wave should be live (panel visible). Stops the display link when false.
     var isAnimating = false {
@@ -291,6 +299,7 @@ final class WaveformView: NSView {
         case .transcribing:  colors = SottoTheme.State.transcribing
         case .refining:      colors = SottoTheme.State.refining
         case .result:        colors = SottoTheme.State.result
+        case .cancelled:     colors = SottoTheme.State.cancelled
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
