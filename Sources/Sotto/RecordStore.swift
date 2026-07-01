@@ -8,10 +8,21 @@ struct DictationRecord: Codable, Identifiable {
     let rawText: String        // raw ASR output
     let refinedText: String    // after LLM refinement (== rawText if refine off/failed)
     let audioFileName: String? // relative to the store's audio directory, nil if not saved
+    /// User's manual correction, the ground truth for the data flywheel. nil
+    /// until the user fixes the record. Optional so old history.json still decodes.
+    var correctedText: String? = nil
 
-    /// Non-whitespace character count of the final (refined) text.
+    /// Best available text: the human correction when present, else the refined text.
+    var displayText: String {
+        (correctedText?.isEmpty == false) ? correctedText! : refinedText
+    }
+
+    /// Whether the user has verified/fixed this record (it becomes training data).
+    var isCorrected: Bool { correctedText?.isEmpty == false }
+
+    /// Non-whitespace character count of the final (best) text.
     var charCount: Int {
-        refinedText.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.count
+        displayText.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.count
     }
 
     /// Characters per minute for this utterance.
@@ -125,6 +136,45 @@ final class RecordStore {
             records.removeAll()
             persist()
         }
+    }
+
+    // MARK: - Editing (data flywheel)
+
+    /// Store (or clear) the user's manual correction for a record. An empty or
+    /// whitespace-only string clears the correction.
+    func setCorrection(id: String, correctedText: String?) {
+        queue.sync {
+            guard let idx = records.firstIndex(where: { $0.id == id }) else { return }
+            let clean = correctedText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            records[idx].correctedText = (clean?.isEmpty == false) ? clean : nil
+            persist()
+        }
+    }
+
+    /// Records the user has corrected — the training set.
+    var correctedCount: Int { records.reduce(0) { $0 + ($1.isCorrected ? 1 : 0) } }
+
+    /// Export corrected records as JSON Lines suitable for ASR fine-tuning:
+    /// one object per line with the raw ASR output, the human-corrected target,
+    /// and the absolute audio path when available. Returns the number written.
+    @discardableResult
+    func exportTrainingData(to url: URL) throws -> Int {
+        let samples = records
+            .filter { $0.isCorrected }
+            .sorted { $0.date < $1.date }
+        var lines: [String] = []
+        for r in samples {
+            var obj: [String: Any] = ["raw": r.rawText, "text": r.correctedText ?? r.refinedText]
+            if let name = r.audioFileName {
+                obj["audio"] = audioDir.appendingPathComponent(name).path
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: obj),
+               let line = String(data: data, encoding: .utf8) {
+                lines.append(line)
+            }
+        }
+        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        return lines.count
     }
 
     // MARK: - Stats

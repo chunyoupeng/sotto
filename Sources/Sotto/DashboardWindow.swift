@@ -64,10 +64,11 @@ final class DashboardViewController: NSViewController {
         historyCaption.textColor = SottoTheme.secondaryLabelColor
 
         let settingsBtn = NSButton(title: "设置…", target: self, action: #selector(openSettings))
+        let trainBtn = NSButton(title: "导出训练数据", target: self, action: #selector(exportTraining))
         let exportBtn = NSButton(title: "导出 JSON", target: self, action: #selector(exportJSON))
         let clearBtn = NSButton(title: "清空", target: self, action: #selector(clearHistory))
-        for b in [settingsBtn, exportBtn, clearBtn] { b.bezelStyle = .rounded }
-        let buttonRow = NSStackView(views: [settingsBtn, exportBtn, NSView(), clearBtn])
+        for b in [settingsBtn, trainBtn, exportBtn, clearBtn] { b.bezelStyle = .rounded }
+        let buttonRow = NSStackView(views: [settingsBtn, trainBtn, exportBtn, NSView(), clearBtn])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
 
@@ -100,7 +101,7 @@ final class DashboardViewController: NSViewController {
         todayLabel.stringValue = String(
             format: "今日：%d 字 · %d 次 · 平均 %.0f 字/分",
             today.chars, today.count, today.charsPerMinute)
-        totalLabel.stringValue = "累计：\(store.totalChars) 字 · \(store.totalCount) 次"
+        totalLabel.stringValue = "累计：\(store.totalChars) 字 · \(store.totalCount) 次 · 训练样本 \(store.correctedCount) 条"
         chart.days = store.lastDays(7)
         rows = store.recent()
         table.reloadData()
@@ -128,6 +129,29 @@ final class DashboardViewController: NSViewController {
         }
     }
 
+    @objc private func exportTraining() {
+        let store = RecordStore.shared
+        guard store.correctedCount > 0 else {
+            let alert = NSAlert()
+            alert.messageText = "还没有训练数据"
+            alert.informativeText = "先点每条记录右上角的 ✎ 修正有问题的转写，修正后的数据才会作为训练样本导出。"
+            alert.addButton(withTitle: "知道了")
+            alert.runModal()
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "sotto-training.jsonl"
+        panel.begin { resp in
+            guard resp == .OK, let dest = panel.url else { return }
+            let n = (try? store.exportTrainingData(to: dest)) ?? 0
+            let alert = NSAlert()
+            alert.messageText = "已导出 \(n) 条训练样本"
+            alert.informativeText = "JSON Lines 格式，每行含 raw（识别原文）、text（修正后）和 audio（原音频路径）。"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
+    }
+
     @objc private func clearHistory() {
         let alert = NSAlert()
         alert.messageText = "清空所有历史记录？"
@@ -149,10 +173,19 @@ extension DashboardViewController: NSTableViewDataSource, NSTableViewDelegate {
         let id = NSUserInterfaceItemIdentifier("cell")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? RecordCell) ?? RecordCell(identifier: id)
         let hasAudio = RecordStore.shared.audioURL(for: record) != nil
-        cell.configure(with: record, hasAudio: hasAudio) { [weak self] in
+        cell.configure(with: record, hasAudio: hasAudio, onPlay: { [weak self] in
             self?.play(record: record)
-        }
+        }, onEdit: { [weak self] in
+            self?.editRecord(record)
+        })
         return cell
+    }
+
+    private func editRecord(_ record: DictationRecord) {
+        RecordEditorWindowController.present(for: record) { [weak self] corrected in
+            RecordStore.shared.setCorrection(id: record.id, correctedText: corrected)
+            self?.refresh()
+        }
     }
 
     private func play(record: DictationRecord) {
@@ -168,10 +201,12 @@ extension DashboardViewController: NSTableViewDataSource, NSTableViewDelegate {
 private final class RecordCell: NSView {
     private let card = NSView()
     private let refinedLabel = NSTextField(labelWithString: "")
-    private let rawLabel = NSTextField(wrappingLabelWithString: "")
+    private let rawLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
     private let playButton = NSButton()
+    private let editButton = NSButton()
     private var onPlay: (() -> Void)?
+    private var onEdit: (() -> Void)?
 
     private static let timeFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm"; return f
@@ -213,8 +248,25 @@ private final class RecordCell: NSView {
         playButton.contentTintColor = NSColor(cgColor: SottoTheme.accent)
         playButton.target = self
         playButton.action = #selector(playTapped)
-        playButton.translatesAutoresizingMaskIntoConstraints = false
         playButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        // Edit button — fix the text so it becomes training data.
+        editButton.bezelStyle = .circular
+        editButton.isBordered = false
+        editButton.imagePosition = .imageOnly
+        editButton.image = NSImage(systemSymbolName: "pencil.circle.fill",
+                                    accessibilityDescription: "修正文本")
+        editButton.contentTintColor = SottoTheme.secondaryLabelColor
+        editButton.target = self
+        editButton.action = #selector(editTapped)
+        editButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let buttonStack = NSStackView(views: [editButton, playButton])
+        buttonStack.orientation = .horizontal
+        buttonStack.alignment = .centerY
+        buttonStack.spacing = 8
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        buttonStack.setContentHuggingPriority(.required, for: .horizontal)
 
         let textStack = NSStackView(views: [refinedLabel, rawLabel, metaLabel])
         textStack.orientation = .vertical
@@ -224,7 +276,7 @@ private final class RecordCell: NSView {
         textStack.setHuggingPriority(.defaultLow, for: .horizontal)
 
         card.addSubview(textStack)
-        card.addSubview(playButton)
+        card.addSubview(buttonStack)
 
         NSLayoutConstraint.activate([
             card.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -235,25 +287,39 @@ private final class RecordCell: NSView {
             textStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
             textStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
             textStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
-            textStack.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -10),
+            // `<=` (not `==`) so this can never fight the button's trailing pin:
+            // text just stays left of the buttons and truncates; the buttons keep
+            // their fixed spot on the right edge of every card.
+            textStack.trailingAnchor.constraint(lessThanOrEqualTo: buttonStack.leadingAnchor, constant: -10),
 
-            playButton.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            playButton.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            playButton.widthAnchor.constraint(equalToConstant: 26),
-            playButton.heightAnchor.constraint(equalToConstant: 26),
+            buttonStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            buttonStack.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            editButton.widthAnchor.constraint(equalToConstant: 24),
+            editButton.heightAnchor.constraint(equalToConstant: 24),
+            playButton.widthAnchor.constraint(equalToConstant: 24),
+            playButton.heightAnchor.constraint(equalToConstant: 24),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func playTapped() { onPlay?() }
+    @objc private func editTapped() { onEdit?() }
 
-    func configure(with r: DictationRecord, hasAudio: Bool, onPlay: @escaping () -> Void) {
+    func configure(with r: DictationRecord, hasAudio: Bool,
+                   onPlay: @escaping () -> Void, onEdit: @escaping () -> Void) {
         self.onPlay = onPlay
-        refinedLabel.stringValue = r.refinedText.isEmpty ? "（空）" : r.refinedText
+        self.onEdit = onEdit
 
-        // Only show the raw line when it actually differs from the refined text.
-        if !r.rawText.isEmpty && r.rawText != r.refinedText {
+        let headline = r.displayText.isEmpty ? "（空）" : r.displayText
+        refinedLabel.stringValue = r.isCorrected ? "✓ \(headline)" : headline
+        refinedLabel.textColor = r.isCorrected
+            ? NSColor(cgColor: SottoTheme.accent) ?? SottoTheme.primaryLabelColor
+            : SottoTheme.primaryLabelColor
+
+        // Show the raw line whenever it differs from the displayed (best) text,
+        // so you can see what the model heard versus the corrected version.
+        if !r.rawText.isEmpty && r.rawText != r.displayText {
             rawLabel.stringValue = "识别原文：\(r.rawText)"
             rawLabel.isHidden = false
         } else {
@@ -261,9 +327,10 @@ private final class RecordCell: NSView {
         }
 
         metaLabel.stringValue = String(
-            format: "%@ · %d 字 · %.1fs · %.0f 字/分",
+            format: "%@ · %d 字 · %.1fs · %.0f 字/分%@",
             RecordCell.timeFmt.string(from: r.date),
-            r.charCount, r.durationSeconds, r.charsPerMinute)
+            r.charCount, r.durationSeconds, r.charsPerMinute,
+            r.isCorrected ? " · 已修正" : "")
 
         playButton.isHidden = !hasAudio
     }
@@ -273,15 +340,26 @@ private final class RecordCell: NSView {
 private final class BarChartView: NSView {
     var days: [DayStats] = [] { didSet { needsDisplay = true } }
 
+    /// Index of the column the mouse is currently over, if any. Hovering a
+    /// column reveals that day's character count above its bar.
+    private var hoveredIndex: Int? { didSet { if hoveredIndex != oldValue { needsDisplay = true } } }
+
     override var isFlipped: Bool { false }
+
+    private let gap: CGFloat = 8
+    private let labelH: CGFloat = 14
+
+    /// x-origin and width of the bar in column `i`. Kept in one place so drawing
+    /// and hit-testing stay in sync.
+    private func barMetrics(_ i: Int) -> (x: CGFloat, width: CGFloat) {
+        let n = max(days.count, 1)
+        let barW = (bounds.width - gap * CGFloat(n - 1)) / CGFloat(n)
+        return (CGFloat(i) * (barW + gap), barW)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard !days.isEmpty else { return }
         let maxChars = max(days.map { $0.chars }.max() ?? 1, 1)
-        let n = days.count
-        let gap: CGFloat = 8
-        let barW = (bounds.width - gap * CGFloat(n - 1)) / CGFloat(n)
-        let labelH: CGFloat = 14
         let chartH = bounds.height - labelH
 
         let fmt = DateFormatter(); fmt.dateFormat = "d"
@@ -291,7 +369,7 @@ private final class BarChartView: NSView {
         guard let gradient = NSGradient(colors: colors) else { return }
 
         for (i, day) in days.enumerated() {
-            let x = CGFloat(i) * (barW + gap)
+            let (x, barW) = barMetrics(i)
             let frac = CGFloat(day.chars) / CGFloat(maxChars)
             let h = max(chartH * frac, day.chars > 0 ? 3 : 0)
             let rect = NSRect(x: x, y: labelH, width: barW, height: h)
@@ -305,6 +383,41 @@ private final class BarChartView: NSView {
             ]
             let size = dayLabel.size(withAttributes: attrs)
             dayLabel.draw(at: NSPoint(x: x + (barW - size.width) / 2, y: 0), withAttributes: attrs)
+
+            // Hovered column: show the day's char count just above its bar.
+            if hoveredIndex == i {
+                let value = "\(day.chars)" as NSString
+                let vAttrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                    .foregroundColor: SottoTheme.primaryLabelColor,
+                ]
+                let vSize = value.size(withAttributes: vAttrs)
+                let vx = x + (barW - vSize.width) / 2
+                // Clamp inside the view so tall bars don't push the number off-top.
+                let vy = min(labelH + h + 2, bounds.height - vSize.height)
+                value.draw(at: NSPoint(x: vx, y: vy), withAttributes: vAttrs)
+            }
         }
     }
+
+    // MARK: - Hover tracking
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        hoveredIndex = days.indices.first { i in
+            let (x, w) = barMetrics(i)
+            return p.x >= x && p.x <= x + w
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) { hoveredIndex = nil }
 }

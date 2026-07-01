@@ -1,7 +1,10 @@
 import AppKit
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
+// `.regular`: Sotto is a real app — it owns a Dock icon and main window and is
+// reachable via ⌘-Tab — while still keeping its menu-bar item. Maintenance/debug
+// invocations below exit before the delegate, so the policy is harmless there.
+app.setActivationPolicy(.regular)
 
 // Maintenance-only: create/repair ~/.sotto without launching the menu-bar app.
 if CommandLine.arguments.contains("--repair-sotto") {

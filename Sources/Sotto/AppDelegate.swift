@@ -35,9 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (VoiceInput → Sotto) runs at launch rather than on first dashboard open.
         _ = RecordStore.shared
 
+        setupMainMenu()
         setupStatusBar()
         setupSpeechCallbacks()
         setupDashboard()
+        showMainWindow()
 
         settingsWindow.onSettingsChanged = { [weak self] in self?.reloadFromSettings() }
 
@@ -173,6 +175,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func commitResult(raw: String, refined: String, audioURL: URL?, duration: TimeInterval) {
+        // Filler-only utterances: the refiner returns "无" (or nothing) when the
+        // input was just hesitation sounds. Don't type that into the document or
+        // clutter history — just dismiss silently.
+        let finalText = refined.trimmingCharacters(in: .whitespacesAndNewlines)
+        if finalText.isEmpty || finalText == "无" {
+            if let u = audioURL { try? FileManager.default.removeItem(at: u) }
+            overlayPanel.dismiss()
+            return
+        }
+
         if AppSettings.saveHistory {
             RecordStore.shared.add(rawText: raw, refinedText: refined,
                                    duration: duration, tempAudioURL: audioURL)
@@ -190,6 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if dashboardPopover.isShown { dashboardVC.refresh() }
+        if let win = dashboardWindow, win.isVisible { dashboardWindowVC.refresh() }
     }
 
     // MARK: - Status bar
@@ -254,37 +267,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dashboardPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
-    /// Standalone dashboard window — used by the global hotkey so it works even
-    /// when the menu-bar icon is hidden behind the notch or overflow.
+    /// The real, ⌘-Tab-switchable main window. Created lazily and reused.
+    private func mainWindowIfNeeded() -> NSWindow {
+        if let existing = dashboardWindow { return existing }
+        dashboardWindowVC.onOpenSettings = { [weak self] in self?.openSettings() }
+        let win = NSWindow(contentViewController: dashboardWindowVC)
+        win.styleMask = [.titled, .closable, .miniaturizable]
+        win.title = "Sotto"
+        win.isReleasedWhenClosed = false
+        win.appearance = NSAppearance(named: .darkAqua)
+        win.center()
+        dashboardWindow = win
+        return win
+    }
+
+    /// Bring the main window to the front (creating it if needed) and refresh it.
+    private func showMainWindow() {
+        let win = mainWindowIfNeeded()
+        dashboardWindowVC.refresh()
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Global-hotkey entry point: toggle the main window's visibility.
     private func toggleDashboardWindow() {
         if let win = dashboardWindow, win.isVisible {
             win.orderOut(nil)
-            return
-        }
-        dashboardWindowVC.onOpenSettings = { [weak self] in self?.openSettings() }
-        dashboardWindowVC.refresh()
-
-        let win: NSWindow
-        if let existing = dashboardWindow {
-            win = existing
         } else {
-            win = NSWindow(contentViewController: dashboardWindowVC)
-            win.styleMask = [.titled, .closable, .miniaturizable]
-            win.title = "Sotto 仪表盘"
-            win.isReleasedWhenClosed = false
-            win.appearance = NSAppearance(named: .darkAqua)
-            dashboardWindow = win
+            showMainWindow()
         }
+    }
 
-        // Top-right of the main screen, just under the menu bar.
-        if let screen = NSScreen.main {
-            let vf = screen.visibleFrame
-            let size = win.frame.size
-            let origin = NSPoint(x: vf.maxX - size.width - 16, y: vf.maxY - size.height - 16)
-            win.setFrameOrigin(origin)
-        }
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    /// Clicking the Dock icon (or otherwise reopening) shows the main window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        showMainWindow()
+        return true
+    }
+
+    // MARK: - Main menu
+
+    /// A minimal but standard main menu so Sotto behaves like a real app: an app
+    /// menu (Quit/Settings), an Edit menu (cut/copy/paste/undo — needed by the
+    /// record editor's text view), and a Window menu.
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        let settings = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "隐藏 Sotto", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
+        appMenu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出 Sotto", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(quit)
+
+        // Edit menu — wires up the standard responder-chain text actions.
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "编辑")
+        editItem.submenu = editMenu
+        editMenu.addItem(NSMenuItem(title: "撤销", action: Selector(("undo:")), keyEquivalent: "z"))
+        let redo = NSMenuItem(title: "重做", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+
+        // Window menu
+        let windowItem = NSMenuItem()
+        mainMenu.addItem(windowItem)
+        let windowMenu = NSMenu(title: "窗口")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(NSMenuItem(title: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(title: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        NSApp.windowsMenu = windowMenu
+
+        NSApp.mainMenu = mainMenu
     }
 
     // MARK: - Menu (right-click)
