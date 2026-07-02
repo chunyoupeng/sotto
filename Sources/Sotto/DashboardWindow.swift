@@ -6,7 +6,9 @@ import AVFoundation
 final class DashboardViewController: NSViewController {
     var onOpenSettings: (() -> Void)?
 
-    private let todayLabel = NSTextField(labelWithString: "")
+    private let statChars = StatBlock(caption: "今日字数")
+    private let statCount = StatBlock(caption: "今日次数")
+    private let statSpeed = StatBlock(caption: "字 / 分")
     private let totalLabel = NSTextField(labelWithString: "")
     private let chart = BarChartView()
     private let table = NSTableView()
@@ -26,8 +28,13 @@ final class DashboardViewController: NSViewController {
         title.font = .systemFont(ofSize: 16, weight: .semibold)
         title.textColor = SottoTheme.primaryLabelColor
 
-        todayLabel.font = .systemFont(ofSize: 13)
-        todayLabel.textColor = SottoTheme.primaryLabelColor
+        // Today's numbers as three equal stat cards — the glanceable headline.
+        let statRow = NSStackView(views: [statChars, statCount, statSpeed])
+        statRow.orientation = .horizontal
+        statRow.distribution = .fillEqually
+        statRow.spacing = 8
+        statRow.translatesAutoresizingMaskIntoConstraints = false
+
         totalLabel.font = .systemFont(ofSize: 11)
         totalLabel.textColor = SottoTheme.secondaryLabelColor
 
@@ -73,7 +80,7 @@ final class DashboardViewController: NSViewController {
         buttonRow.spacing = 8
 
         let stack = NSStackView(views: [
-            title, todayLabel, totalLabel, chartCaption, chart,
+            title, statRow, totalLabel, chartCaption, chart,
             historyCaption, scroll, buttonRow,
         ])
         stack.orientation = .vertical
@@ -88,6 +95,7 @@ final class DashboardViewController: NSViewController {
             stack.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -16),
             stack.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -16),
+            statRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
             chart.heightAnchor.constraint(equalToConstant: 90),
             chart.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -98,9 +106,9 @@ final class DashboardViewController: NSViewController {
     func refresh() {
         let store = RecordStore.shared
         let today = store.todayStats()
-        todayLabel.stringValue = String(
-            format: "今日：%d 字 · %d 次 · 平均 %.0f 字/分",
-            today.chars, today.count, today.charsPerMinute)
+        statChars.value = "\(today.chars)"
+        statCount.value = "\(today.count)"
+        statSpeed.value = String(format: "%.0f", today.charsPerMinute)
         totalLabel.stringValue = "累计：\(store.totalChars) 字 · \(store.totalCount) 次 · 训练样本 \(store.correctedCount) 条"
         chart.days = store.lastDays(7)
         rows = store.recent()
@@ -193,6 +201,47 @@ extension DashboardViewController: NSTableViewDataSource, NSTableViewDelegate {
         player = try? AVAudioPlayer(contentsOf: url)
         player?.play()
     }
+}
+
+/// One glanceable metric on a translucent card: a big monospaced-digit number
+/// with a muted caption underneath. Three of these form the dashboard's
+/// "today" headline row.
+private final class StatBlock: NSView {
+    private let valueLabel = NSTextField(labelWithString: "0")
+    private let captionLabel = NSTextField(labelWithString: "")
+
+    var value: String {
+        get { valueLabel.stringValue }
+        set { valueLabel.stringValue = newValue }
+    }
+
+    init(caption: String) {
+        super.init(frame: .zero)
+        SottoTheme.styleAsCard(self)
+
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 24, weight: .semibold)
+        valueLabel.textColor = SottoTheme.primaryLabelColor
+        valueLabel.lineBreakMode = .byTruncatingTail
+
+        captionLabel.stringValue = caption
+        captionLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        captionLabel.textColor = SottoTheme.secondaryLabelColor
+
+        let stack = NSStackView(views: [valueLabel, captionLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
 }
 
 /// A card history cell showing all three artifacts of one dictation:
