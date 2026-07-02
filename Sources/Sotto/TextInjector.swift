@@ -9,9 +9,16 @@ final class TextInjector {
     /// across apps; CGEvent's unicode string has practical length limits.
     private let chunkSize = 20
 
+    /// Serial, so overlapping inject calls keep their text in order, and the
+    /// inter-chunk sleeps never stall the main thread.
+    private let queue = DispatchQueue(label: "com.chunyoupeng.Sotto.inject", qos: .userInteractive)
+
     func inject(_ text: String) {
         guard !text.isEmpty else { return }
+        queue.async { self.postEvents(for: text) }
+    }
 
+    private func postEvents(for text: String) {
         let src = CGEventSource(stateID: .privateState)
         let units = Array(text.utf16)
 

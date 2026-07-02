@@ -1,19 +1,8 @@
 import AVFoundation
 import Foundation
 
-private let logger_subsystem = "com.chunyoupeng.Sotto"
-
 private func logToFile(_ message: String) {
-    let msg = "[\(ISO8601DateFormatter().string(from: Date()))] [SpeechEngine] \(message)\n"
-    let logURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/Sotto.log")
-    if let handle = try? FileHandle(forWritingTo: logURL) {
-        handle.seekToEndOfFile()
-        handle.write(msg.data(using: .utf8)!)
-        handle.closeFile()
-    } else {
-        FileManager.default.createFile(atPath: logURL.path, contents: msg.data(using: .utf8))
-    }
+    SottoLog.log("SpeechEngine", message)
 }
 
 /// Speech recognition backed by a local MLX ASR model (Qwen3-ASR) running in a
@@ -54,7 +43,10 @@ final class SpeechEngine {
     private var pending: [Int: (Result<String, Error>) -> Void] = [:]
     private var queuedLines: [Data] = []
     private var stdoutBuffer = Data()
-    private var didTryRelaunch = false
+    /// Consecutive failed launches. Reset on "ready"; relaunches back off
+    /// exponentially and give up (with a user-visible error) after `maxRelaunches`.
+    private var relaunchAttempts = 0
+    private let maxRelaunches = 5
 
     init(locale: Locale = Locale(identifier: "zh-CN")) {
         self.locale = locale
@@ -83,6 +75,13 @@ final class SpeechEngine {
     func startRecording() {
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // No usable input device (or mic permission missing) reports a 0 Hz
+        // format; installing a tap with it raises an ObjC exception and crashes.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            onError?("没有可用的麦克风输入")
+            return
+        }
 
         // Target: 16 kHz mono — what the ASR model expects.
         let url = FileManager.default.temporaryDirectory
@@ -259,7 +258,7 @@ final class SpeechEngine {
         if let url = Bundle.main.url(forResource: "asr_server", withExtension: "py") {
             return url.path
         }
-        let dev = "/Users/pengchunyou/Projects/sotto/Resources/asr_server.py"
+        let dev = AppSettings.devRepoRoot.appendingPathComponent("Resources/asr_server.py").path
         return FileManager.default.fileExists(atPath: dev) ? dev : nil
     }
 
@@ -324,15 +323,29 @@ final class SpeechEngine {
         isReady = false
         stdinHandle = nil
         process = nil
+        // Fail everything in flight; also drop queued requests — their pending
+        // callbacks are being failed here, so replaying the lines after a
+        // relaunch would transcribe into the void (and the WAVs may be gone).
+        queuedLines.removeAll()
         let failing = pending
         pending.removeAll()
         for (_, cb) in failing {
             cb(.failure(EngineError.daemonUnavailable))
         }
-        if !didTryRelaunch {
-            didTryRelaunch = true
-            logToFile("relaunching daemon")
-            launchDaemon()
+
+        relaunchAttempts += 1
+        guard relaunchAttempts <= maxRelaunches else {
+            logToFile("daemon crashed \(maxRelaunches) times in a row, giving up")
+            DispatchQueue.main.async { [weak self] in
+                self?.onError?("语音引擎多次崩溃，已停止重试。请检查模型路径后重启 Sotto。")
+            }
+            return
+        }
+        let delay = min(0.5 * pow(2.0, Double(relaunchAttempts - 1)), 8.0)
+        logToFile("relaunching daemon in \(delay)s (attempt \(relaunchAttempts)/\(maxRelaunches))")
+        daemonQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.process == nil else { return }
+            self.launchDaemon()
         }
     }
 
@@ -350,7 +363,7 @@ final class SpeechEngine {
             switch type {
             case "ready":
                 isReady = true
-                didTryRelaunch = false
+                relaunchAttempts = 0
                 logToFile("daemon ready")
                 let queued = queuedLines
                 queuedLines.removeAll()

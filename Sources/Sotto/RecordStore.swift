@@ -47,43 +47,70 @@ struct DayStats {
 final class RecordStore {
     static let shared = RecordStore()
 
+    /// Guards `records`: all reads/writes of the array go through this queue.
     private let queue = DispatchQueue(label: "com.chunyoupeng.Sotto.records")
-    private(set) var records: [DictationRecord] = []
+    /// Disk writes happen here so `add` never blocks the caller on file I/O.
+    private let ioQueue = DispatchQueue(label: "com.chunyoupeng.Sotto.records.io", qos: .utility)
+    private var records: [DictationRecord] = []
 
     let baseDir: URL
     let audioDir: URL
     private let jsonURL: URL
 
-    private init() {
+    /// Designated initializer, internal so tests can point a store at a temp dir.
+    init(baseDir: URL) {
         let fm = FileManager.default
-        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        baseDir = support.appendingPathComponent("Sotto", isDirectory: true)
-
-        // One-time migration from the old "VoiceInput" folder name to "Sotto".
-        let legacy = support.appendingPathComponent("VoiceInput", isDirectory: true)
-        if fm.fileExists(atPath: legacy.path) && !fm.fileExists(atPath: baseDir.path) {
-            try? fm.moveItem(at: legacy, to: baseDir)
-        }
-
+        self.baseDir = baseDir
         audioDir = baseDir.appendingPathComponent("audio", isDirectory: true)
         jsonURL = baseDir.appendingPathComponent("history.json")
         try? fm.createDirectory(at: audioDir, withIntermediateDirectories: true)
         load()
     }
 
+    private convenience init() {
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let base = support.appendingPathComponent("Sotto", isDirectory: true)
+
+        // One-time migration from the old "VoiceInput" folder name to "Sotto".
+        let legacy = support.appendingPathComponent("VoiceInput", isDirectory: true)
+        if fm.fileExists(atPath: legacy.path) && !fm.fileExists(atPath: base.path) {
+            try? fm.moveItem(at: legacy, to: base)
+        }
+        self.init(baseDir: base)
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: jsonURL) else { return }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        records = (try? dec.decode([DictationRecord].self, from: data)) ?? []
+        if let decoded = try? dec.decode([DictationRecord].self, from: data) {
+            records = decoded
+        } else {
+            // Corrupt history: keep the bytes for post-mortem instead of
+            // silently overwriting them on the next dictation.
+            let backup = baseDir.appendingPathComponent("history.corrupt.json")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.moveItem(at: jsonURL, to: backup)
+            SottoLog.log("RecordStore", "history.json unreadable; moved to \(backup.lastPathComponent)")
+        }
     }
 
-    private func persist() {
-        let enc = JSONEncoder()
-        enc.dateEncodingStrategy = .iso8601
-        enc.outputFormatting = [.prettyPrinted]
-        if let data = try? enc.encode(records) {
-            try? data.write(to: jsonURL, options: .atomic)
+    /// Thread-safe copy of all records.
+    private func snapshot() -> [DictationRecord] {
+        queue.sync { records }
+    }
+
+    /// Serialize the current records to disk on the background I/O queue.
+    private func persistAsync() {
+        let snap = snapshot()
+        ioQueue.async { [jsonURL] in
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            enc.outputFormatting = [.prettyPrinted]
+            if let data = try? enc.encode(snap) {
+                try? data.write(to: jsonURL, options: .atomic)
+            }
         }
     }
 
@@ -111,10 +138,8 @@ final class RecordStore {
             id: id, date: Date(), durationSeconds: duration,
             rawText: rawText, refinedText: refinedText, audioFileName: savedName)
 
-        queue.sync {
-            records.append(record)
-            persist()
-        }
+        queue.sync { records.append(record) }
+        persistAsync()
     }
 
     func audioURL(for record: DictationRecord) -> URL? {
@@ -125,17 +150,18 @@ final class RecordStore {
 
     /// Most-recent-first.
     func recent(limit: Int = 200) -> [DictationRecord] {
-        Array(records.sorted { $0.date > $1.date }.prefix(limit))
+        Array(snapshot().sorted { $0.date > $1.date }.prefix(limit))
     }
 
     func clearAll() {
-        queue.sync {
-            for r in records {
-                if let url = audioURL(for: r) { try? FileManager.default.removeItem(at: url) }
-            }
-            records.removeAll()
-            persist()
+        let removed = queue.sync { () -> [DictationRecord] in
+            defer { records.removeAll() }
+            return records
         }
+        for r in removed {
+            if let url = audioURL(for: r) { try? FileManager.default.removeItem(at: url) }
+        }
+        persistAsync()
     }
 
     // MARK: - Editing (data flywheel)
@@ -147,19 +173,19 @@ final class RecordStore {
             guard let idx = records.firstIndex(where: { $0.id == id }) else { return }
             let clean = correctedText?.trimmingCharacters(in: .whitespacesAndNewlines)
             records[idx].correctedText = (clean?.isEmpty == false) ? clean : nil
-            persist()
         }
+        persistAsync()
     }
 
     /// Records the user has corrected — the training set.
-    var correctedCount: Int { records.reduce(0) { $0 + ($1.isCorrected ? 1 : 0) } }
+    var correctedCount: Int { snapshot().reduce(0) { $0 + ($1.isCorrected ? 1 : 0) } }
 
     /// Export corrected records as JSON Lines suitable for ASR fine-tuning:
     /// one object per line with the raw ASR output, the human-corrected target,
     /// and the absolute audio path when available. Returns the number written.
     @discardableResult
     func exportTrainingData(to url: URL) throws -> Int {
-        let samples = records
+        let samples = snapshot()
             .filter { $0.isCorrected }
             .sorted { $0.date < $1.date }
         var lines: [String] = []
@@ -184,6 +210,10 @@ final class RecordStore {
     }
 
     func stats(forDay date: Date) -> DayStats {
+        Self.stats(forDay: date, in: snapshot())
+    }
+
+    private static func stats(forDay date: Date, in records: [DictationRecord]) -> DayStats {
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: date)
         let todays = records.filter { cal.isDate($0.date, inSameDayAs: date) }
@@ -194,14 +224,15 @@ final class RecordStore {
 
     /// Stats for the last `days` days, oldest-first, including empty days.
     func lastDays(_ days: Int) -> [DayStats] {
+        let snap = snapshot()
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
         return (0..<days).reversed().compactMap { offset in
             guard let d = cal.date(byAdding: .day, value: -offset, to: today) else { return nil }
-            return stats(forDay: d)
+            return Self.stats(forDay: d, in: snap)
         }
     }
 
-    var totalChars: Int { records.reduce(0) { $0 + $1.charCount } }
-    var totalCount: Int { records.count }
+    var totalChars: Int { snapshot().reduce(0) { $0 + $1.charCount } }
+    var totalCount: Int { queue.sync { records.count } }
 }

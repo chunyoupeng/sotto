@@ -163,6 +163,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let refined: String
                 switch result {
                 case .success(let r): refined = r.isEmpty ? rawText : r
+                case .failure(LLMRefiner.RefinerError.cancelled):
+                    // A new recording started and deliberately cancelled this
+                    // refine — discard the utterance entirely. Committing the raw
+                    // text here would type it mid-recording and clobber the new
+                    // session's "listening" overlay.
+                    if let u = audioURL { try? FileManager.default.removeItem(at: u) }
+                    return
                 case .failure(let e):
                     NSLog("[LLMRefiner] refine failed: %@", e.localizedDescription)
                     refined = rawText
@@ -191,14 +198,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let u = audioURL { try? FileManager.default.removeItem(at: u) }
 
+        // Inject immediately — the overlay is a non-activating panel, so focus
+        // never left the target field and there is nothing to wait for. The
+        // result stays on screen briefly for feedback while the text lands.
         overlayPanel.showResult(refined)
+        textInjector.inject(refined)
+        NSSound(named: .init("Pop"))?.play()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            guard let self else { return }
-            self.overlayPanel.dismiss()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.textInjector.inject(refined)
-                NSSound(named: .init("Pop"))?.play()
-            }
+            self?.overlayPanel.dismiss()
         }
 
         if dashboardPopover.isShown { dashboardVC.refresh() }
