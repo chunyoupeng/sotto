@@ -7,7 +7,13 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Sotto",
-            path: "Sources/Sotto"
-        )
+            path: "Sources/Sotto",
+            resources: [.copy("Resources/default_prompt.txt")]
+        ),
+        .testTarget(
+            name: "SottoTests",
+            dependencies: ["Sotto"],
+            path: "Tests/SottoTests"
+        ),
     ]
 )
