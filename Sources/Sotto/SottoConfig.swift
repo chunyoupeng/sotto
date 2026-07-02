@@ -152,6 +152,9 @@ enum SottoConfig {
             "tapThreshold": 0.4,
             "saveHistory": true,
             "saveAudio": true,
+            // Opt-in: when true, transcripts and LLM responses are written to
+            // ~/Library/Logs/Sotto.log for debugging. Off by default (privacy).
+            "debugLogging": false,
             "selectedLocaleCode": "zh-CN",
             "asrPythonPath": "",
             "asrModelPath": AppSettings.defaultManagedModelURL.path,

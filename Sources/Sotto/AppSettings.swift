@@ -109,7 +109,26 @@ enum AppSettings {
         managedModelDir.appendingPathComponent(defaultModelName, isDirectory: true)
     }
 
-    /// Dev-only fallbacks (this machine), used when nothing else resolves.
-    static let devPythonPath = "/Users/pengchunyou/Projects/sotto/.venv/bin/python3"
-    static let devModelPath = "/Users/pengchunyou/.cache/modelscope/hub/models/mlx-community/Qwen3-ASR-0___6B-8bit"
+    // MARK: - Dev fallbacks
+
+    /// Repo root on the machine this binary was built on, derived from the
+    /// source location at compile time. Only meaningful for local dev builds
+    /// (`swift run` before `make engine`/`make model`); shipped apps resolve the
+    /// bundled engine and managed model first and never reach these paths.
+    static let devRepoRoot = URL(fileURLWithPath: #filePath)  // …/Sources/Sotto/AppSettings.swift
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    static var devPythonPath: String {
+        devRepoRoot.appendingPathComponent(".venv/bin/python3").path
+    }
+
+    /// ModelScope's local cache location for the default model, if the developer
+    /// has downloaded it there.
+    static var devModelPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/modelscope/hub/models/mlx-community/Qwen3-ASR-0___6B-8bit")
+            .path
+    }
 }

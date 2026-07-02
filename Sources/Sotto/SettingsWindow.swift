@@ -501,15 +501,16 @@ final class SettingsWindow: NSPanel {
     @objc private func closeWindow() { close() }
 
     @objc private func test() {
-        let refiner = LLMRefiner.shared
-        refiner.apiBaseURL = apiBaseURLField.stringValue
-        refiner.apiKey = apiKeyField.stringValue
-        refiner.model = modelField.stringValue
-        guard refiner.isConfigured else {
+        // Test with the field values as-is — nothing is persisted until 保存.
+        let baseURL = apiBaseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !baseURL.isEmpty else {
             showStatus("API Base URL 为空", success: false); return
         }
         showStatus("测试中…", success: nil)
-        refiner.refine("派森写了一个阿皮艾", force: true) { [weak self] result in
+        LLMRefiner.test(text: "派森写了一个阿皮艾",
+                        baseURL: baseURL,
+                        apiKey: apiKeyField.stringValue,
+                        model: modelField.stringValue) { [weak self] result in
             switch result {
             case .success(let text): self?.showStatus("OK：\(text)", success: true)
             case .failure(let error): self?.showStatus(error.localizedDescription, success: false)

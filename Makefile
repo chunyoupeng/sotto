@@ -53,6 +53,10 @@ build:
 	cp $(BUILD_DIR)/$(BIN_NAME) $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 	cp Info.plist $(APP_BUNDLE)/Contents/
 	cp Resources/asr_server.py $(APP_BUNDLE)/Contents/Resources/
+	cp Sources/Sotto/Resources/default_prompt.txt $(APP_BUNDLE)/Contents/Resources/
+	@if [ -d "$(BUILD_DIR)/$(APP_NAME)_$(APP_NAME).bundle" ]; then \
+		cp -R "$(BUILD_DIR)/$(APP_NAME)_$(APP_NAME).bundle" $(APP_BUNDLE)/Contents/Resources/; \
+	fi
 	cp Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/
 	@if [ -d "$(ENGINE_DIR)" ]; then \
 		echo "Bundling frozen ASR engine"; \
