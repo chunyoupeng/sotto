@@ -23,6 +23,16 @@ enum SottoTheme {
             CGColor(red: 0.13, green: 0.83, blue: 0.93, alpha: 1),  // cyan
             CGColor(red: 0.39, green: 0.40, blue: 0.95, alpha: 1),  // indigo
         ]
+        /// Translate-mode listening: green, so the mode is obvious at a glance.
+        static let listeningTranslate: [CGColor] = [
+            CGColor(red: 0.25, green: 0.87, blue: 0.45, alpha: 1),  // green
+            CGColor(red: 0.10, green: 0.65, blue: 0.55, alpha: 1),  // teal
+        ]
+        /// QA-mode listening: pink/magenta, distinct from both others.
+        static let listeningQA: [CGColor] = [
+            CGColor(red: 0.96, green: 0.42, blue: 0.62, alpha: 1),  // pink
+            CGColor(red: 0.78, green: 0.30, blue: 0.88, alpha: 1),  // magenta
+        ]
         static let transcribing: [CGColor] = [
             CGColor(red: 0.95, green: 0.74, blue: 0.31, alpha: 1),  // amber
             CGColor(red: 0.95, green: 0.55, blue: 0.34, alpha: 1),  // warm

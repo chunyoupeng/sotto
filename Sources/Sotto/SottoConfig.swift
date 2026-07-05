@@ -9,6 +9,7 @@ import Foundation
 ///   ~/.sotto/
 ///   ├── config.json     structured settings (the single source of truth)
 ///   ├── prompt.txt      LLM refine system prompt (plain text, editable)
+///   ├── hotwords.txt    user hotword list, one per line ('#' = comment)
 ///   └── models/         ASR model storage
 ///
 /// On first launch, any pre-existing `UserDefaults` values are migrated into
@@ -21,6 +22,7 @@ enum SottoConfig {
         .homeDirectoryForCurrentUser.appendingPathComponent(".sotto", isDirectory: true)
     static let configURL = homeDir.appendingPathComponent("config.json")
     static let promptURL = homeDir.appendingPathComponent("prompt.txt")
+    static let hotwordsURL = homeDir.appendingPathComponent("hotwords.txt")
     static let modelsDir = homeDir.appendingPathComponent("models", isDirectory: true)
 
     private static let lock = NSLock()
@@ -80,6 +82,27 @@ enum SottoConfig {
         try? text.write(to: promptURL, atomically: true, encoding: .utf8)
     }
 
+    // MARK: - Hotwords file
+
+    /// Hotwords from `~/.sotto/hotwords.txt`: one per line, blank lines and
+    /// lines starting with `#` ignored.
+    static func readHotwords() -> [String] {
+        guard let s = try? String(contentsOf: hotwordsURL, encoding: .utf8) else { return [] }
+        return s.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+    }
+
+    private static let hotwordsTemplate = """
+        # Sotto 热词表：每行一个词，以 # 开头的行是注释。
+        # 写上常被语音识别弄错的人名、项目名、品牌、术语的正确写法，
+        # 润色时会按这里的写法纠正同音/近音的误识别。
+        # 示例（删掉前面的 # 即生效）：
+        # Sotto
+        # MLX
+
+        """
+
     // MARK: - Load / migrate / persist
 
     private static func load() -> [String: Any] {
@@ -113,6 +136,12 @@ enum SottoConfig {
         if readPrompt().isEmpty {
             let existingPrompt = UserDefaults.standard.string(forKey: "llmSystemPrompt")
             writePrompt((existingPrompt?.isEmpty == false) ? existingPrompt! : LLMRefiner.defaultSystemPrompt)
+        }
+
+        // Seed the hotwords file with a commented template so the feature is
+        // discoverable; never touches an existing file.
+        if !fm.fileExists(atPath: hotwordsURL.path) {
+            try? hotwordsTemplate.write(to: hotwordsURL, atomically: true, encoding: .utf8)
         }
 
         linkDevModelIfNeeded()
@@ -162,7 +191,18 @@ enum SottoConfig {
             "llmAPIBaseURL": LLMRefiner.defaultAPIBaseURL,
             "llmAPIKey": "",
             "llmModel": LLMRefiner.defaultModel,
+            // Prior refine turns replayed as context (0 disables).
+            "llmHistoryTurns": 2,
+            "translateEnabled": true,
+            "translateTargetLanguage": "English",
+            "qaEnabled": true,
         ]
+        if let translateHotkey = jsonObject(Hotkey(keyCode: 56, modifiers: Hotkey.fnModifier)) {
+            values["translateHotkey"] = translateHotkey  // fn⇧
+        }
+        if let qaHotkey = jsonObject(Hotkey(keyCode: 49, modifiers: Hotkey.fnModifier)) {
+            values["qaHotkey"] = qaHotkey  // fn Space
+        }
         if let holdHotkey = jsonObject(Hotkey.fn) {
             values["holdHotkey"] = holdHotkey
         }

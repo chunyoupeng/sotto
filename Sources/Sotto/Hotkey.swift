@@ -16,6 +16,11 @@ struct Hotkey: Codable, Equatable {
     var isFn: Bool { keyCode == Hotkey.fnKeyCode }
     var isModifierKey: Bool { Hotkey.modifierFlag(forKeyCode: keyCode) != nil }
 
+    /// Fn used as a *modifier* in a combo (fn⇧, fn Space), as opposed to
+    /// `isFn` where Fn is the trigger key itself.
+    static let fnModifier = CGEventFlags.maskSecondaryFn.rawValue
+    var requiresFnModifier: Bool { modifiers & Hotkey.fnModifier != 0 }
+
     static let fn = Hotkey(keyCode: fnKeyCode, modifiers: 0)
 
     // MARK: - Codable via UserDefaults
@@ -42,11 +47,15 @@ struct Hotkey: Codable, Equatable {
 
     // MARK: - Display
 
-    /// Human-readable form, e.g. "fn", "⌘", "⌥Space".
+    /// Human-readable form, e.g. "fn", "⌘", "⌥Space", "fn⇧".
     var displayString: String {
         if isFn { return "fn" }
-        if isModifierKey { return Hotkey.keyName(forKeyCode: keyCode) }
+        if isModifierKey {
+            let name = Hotkey.keyName(forKeyCode: keyCode)
+            return requiresFnModifier ? "fn" + name : name
+        }
         var s = ""
+        if requiresFnModifier { s += "fn" }
         if modifiers & CGEventFlags.maskControl.rawValue != 0 { s += "⌃" }
         if modifiers & CGEventFlags.maskAlternate.rawValue != 0 { s += "⌥" }
         if modifiers & CGEventFlags.maskShift.rawValue != 0 { s += "⇧" }

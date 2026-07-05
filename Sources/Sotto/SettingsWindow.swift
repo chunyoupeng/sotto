@@ -16,10 +16,14 @@ final class HotkeyRecorderButton: NSButton {
 
     private var monitor: Any?
     private var recording = false
+    /// Fn is held down; commit `.fn` only if it's released alone, so fn-combos
+    /// (fn⇧, fn Space) remain recordable.
+    private var fnArmed = false
 
     private static let relevantMods: UInt64 =
         CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue |
-        CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskControl.rawValue
+        CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskControl.rawValue |
+        Hotkey.fnModifier
 
     init() {
         super.init(frame: .zero)
@@ -52,6 +56,7 @@ final class HotkeyRecorderButton: NSButton {
 
     private func endRecording() {
         recording = false
+        fnArmed = false
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         NotificationCenter.default.post(name: .hotkeyRecordingStopped, object: nil)
         updateTitle()
@@ -64,18 +69,23 @@ final class HotkeyRecorderButton: NSButton {
             commit(Hotkey(keyCode: Int(event.keyCode), modifiers: mods))
             return
         }
-        // flagsChanged: Fn or a bare modifier key.
+        // flagsChanged: Fn, a bare modifier key, or a fn+modifier chord.
         let flags = event.modifierFlags
-        if flags.contains(.function) {
-            commit(.fn)
+        let code = Int(event.keyCode)
+        if code == 63 {  // the Fn key itself
+            if flags.contains(.function) {
+                fnArmed = true  // wait: alone → .fn on release; else combo below
+            } else if fnArmed {
+                commit(.fn)
+            }
             return
         }
-        let code = Int(event.keyCode)
         if let modFlag = Hotkey.modifierFlag(forKeyCode: code) {
             // Only capture on press (flag now set).
-            let cg = CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+            let cg = CGEventFlags(rawValue: UInt64(flags.rawValue))
             if cg.contains(modFlag) {
-                commit(Hotkey(keyCode: code, modifiers: 0))
+                let mods: UInt64 = flags.contains(.function) ? Hotkey.fnModifier : 0
+                commit(Hotkey(keyCode: code, modifiers: mods))
             }
         }
     }
@@ -99,6 +109,10 @@ final class SettingsWindow: NSPanel {
     private let toggleEnabledBox = NSButton(checkboxWithTitle: "启用 Toggle 键", target: nil, action: nil)
     private let dashboardRecorder = HotkeyRecorderButton()
     private let dashboardEnabledBox = NSButton(checkboxWithTitle: "启用呼出键", target: nil, action: nil)
+    private let translateRecorder = HotkeyRecorderButton()
+    private let translateEnabledBox = NSButton(checkboxWithTitle: "启用翻译键", target: nil, action: nil)
+    private let qaRecorder = HotkeyRecorderButton()
+    private let qaEnabledBox = NSButton(checkboxWithTitle: "启用问答键", target: nil, action: nil)
     private let smartTapBox = NSButton(checkboxWithTitle: "智能点按锁定", target: nil, action: nil)
     private let saveHistoryBox = NSButton(checkboxWithTitle: "保存历史记录", target: nil, action: nil)
     private let saveAudioBox = NSButton(checkboxWithTitle: "保存录音音频", target: nil, action: nil)
@@ -113,6 +127,7 @@ final class SettingsWindow: NSPanel {
     private let apiBaseURLField = NSTextField()
     private let apiKeyField = NSTextField()
     private let modelField = NSTextField()
+    private let targetLanguageField = NSTextField()
     private let llmEnabledBox = NSButton(checkboxWithTitle: "启用大模型润色", target: nil, action: nil)
     private let promptTextView = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "")
@@ -262,6 +277,8 @@ final class SettingsWindow: NSPanel {
         holdRecorder.onCapture = { _ in }
         toggleRecorder.onCapture = { _ in }
         dashboardRecorder.onCapture = { _ in }
+        translateRecorder.onCapture = { _ in }
+        qaRecorder.onCapture = { _ in }
         for p in [languagePopup] { p.translatesAutoresizingMaskIntoConstraints = false }
         for (name, _) in languages { languagePopup.addItem(withTitle: name) }
 
@@ -271,10 +288,15 @@ final class SettingsWindow: NSPanel {
         toggleRow.spacing = 12
         let dashboardRow = NSStackView(views: [dashboardRecorder, dashboardEnabledBox])
         dashboardRow.spacing = 12
-        for r in [holdRecorder, toggleRecorder, dashboardRecorder] {
+        let translateRow = NSStackView(views: [translateRecorder, translateEnabledBox])
+        translateRow.spacing = 12
+        let qaRow = NSStackView(views: [qaRecorder, qaEnabledBox])
+        qaRow.spacing = 12
+        for r in [holdRecorder, toggleRecorder, dashboardRecorder, translateRecorder, qaRecorder] {
             r.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
         }
-        let smartNote = NSTextField(wrappingLabelWithString: "快速点按进入持续录音，再点一次结束；长按则松手结束。")
+        let smartNote = NSTextField(wrappingLabelWithString:
+            "快速点按进入持续录音，再点一次结束；长按则松手结束。翻译键把说的话译成目标语言后输入；问答键把回答显示在浮窗中。")
         smartNote.font = .systemFont(ofSize: 11)
         smartNote.textColor = SottoTheme.secondaryLabelColor
 
@@ -282,6 +304,8 @@ final class SettingsWindow: NSPanel {
             row("长按键：", holdRow),
             row("Toggle 键：", toggleRow),
             row("呼出仪表盘：", dashboardRow),
+            row("翻译键：", translateRow),
+            row("问答键：", qaRow),
             smartTapBox,
             smartNote,
             NSBox.separator(),
@@ -331,7 +355,8 @@ final class SettingsWindow: NSPanel {
         apiBaseURLField.placeholderString = "https://api.openai.com/v1"
         apiKeyField.placeholderString = "sk-…（可留空）"
         modelField.placeholderString = "gpt-4o-mini"
-        for f in [apiBaseURLField, apiKeyField, modelField] {
+        targetLanguageField.placeholderString = "English（翻译键的目标语言，自然语言描述即可）"
+        for f in [apiBaseURLField, apiKeyField, modelField, targetLanguageField] {
             styleTextField(f)
             f.widthAnchor.constraint(greaterThanOrEqualToConstant: 400).isActive = true
         }
@@ -376,6 +401,7 @@ final class SettingsWindow: NSPanel {
             row("API Base URL：", apiBaseURLField),
             row("API Key：", apiKeyField),
             row("模型：", modelField),
+            row("翻译目标语言：", targetLanguageField),
             row("", testButton),
             statusLabel,
             promptHeader,
@@ -447,6 +473,10 @@ final class SettingsWindow: NSPanel {
         toggleEnabledBox.state = AppSettings.toggleEnabled ? .on : .off
         dashboardRecorder.hotkey = AppSettings.dashboardHotkey
         dashboardEnabledBox.state = AppSettings.dashboardEnabled ? .on : .off
+        translateRecorder.hotkey = AppSettings.translateHotkey
+        translateEnabledBox.state = AppSettings.translateEnabled ? .on : .off
+        qaRecorder.hotkey = AppSettings.qaHotkey
+        qaEnabledBox.state = AppSettings.qaEnabled ? .on : .off
         smartTapBox.state = AppSettings.smartTapToLock ? .on : .off
         saveHistoryBox.state = AppSettings.saveHistory ? .on : .off
         saveAudioBox.state = AppSettings.saveAudio ? .on : .off
@@ -466,6 +496,7 @@ final class SettingsWindow: NSPanel {
         modelField.stringValue = refiner.model
         llmEnabledBox.state = refiner.isEnabled ? .on : .off
         promptTextView.string = refiner.systemPrompt
+        targetLanguageField.stringValue = refiner.translateTargetLanguage
     }
 
     @objc private func save() {
@@ -475,6 +506,10 @@ final class SettingsWindow: NSPanel {
         AppSettings.toggleEnabled = toggleEnabledBox.state == .on
         if let dk = dashboardRecorder.hotkey { AppSettings.dashboardHotkey = dk }
         AppSettings.dashboardEnabled = dashboardEnabledBox.state == .on
+        if let tk = translateRecorder.hotkey { AppSettings.translateHotkey = tk }
+        AppSettings.translateEnabled = translateEnabledBox.state == .on
+        if let qk = qaRecorder.hotkey { AppSettings.qaHotkey = qk }
+        AppSettings.qaEnabled = qaEnabledBox.state == .on
         AppSettings.smartTapToLock = smartTapBox.state == .on
         AppSettings.saveHistory = saveHistoryBox.state == .on
         AppSettings.saveAudio = saveAudioBox.state == .on
@@ -493,6 +528,8 @@ final class SettingsWindow: NSPanel {
         refiner.model = modelField.stringValue
         refiner.isEnabled = llmEnabledBox.state == .on
         refiner.systemPrompt = promptTextView.string
+        let lang = targetLanguageField.stringValue.trimmingCharacters(in: .whitespaces)
+        refiner.translateTargetLanguage = lang.isEmpty ? "English" : lang
 
         onSettingsChanged?()
         close()

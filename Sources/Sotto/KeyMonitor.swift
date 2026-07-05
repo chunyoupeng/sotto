@@ -12,12 +12,20 @@ final class KeyMonitor {
     var onToggleDown: (() -> Void)?
     /// Dashboard summon key pressed once.
     var onDashboardDown: (() -> Void)?
+    /// Translate key transitions (hold-style, may be a fn+modifier chord).
+    var onTranslateDown: (() -> Void)?
+    var onTranslateUp: (() -> Void)?
+    /// QA key transitions (hold-style).
+    var onQADown: (() -> Void)?
+    var onQAUp: (() -> Void)?
 
     var holdHotkey: Hotkey? = .fn
     var holdEnabled = true
     var toggleHotkey: Hotkey? = nil
     var toggleEnabled = false
     var dashboardHotkey: Hotkey? = nil
+    var translateHotkey: Hotkey? = nil
+    var qaHotkey: Hotkey? = nil
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -26,6 +34,8 @@ final class KeyMonitor {
     private var holdActive = false
     private var toggleActive = false
     private var dashboardActive = false
+    private var translateActive = false
+    private var qaActive = false
 
     /// Reconfigure from current `AppSettings`.
     func reload() {
@@ -34,6 +44,8 @@ final class KeyMonitor {
         toggleHotkey = AppSettings.toggleEnabled ? AppSettings.toggleHotkey : nil
         toggleEnabled = AppSettings.toggleEnabled
         dashboardHotkey = AppSettings.dashboardEnabled ? AppSettings.dashboardHotkey : nil
+        translateHotkey = AppSettings.translateEnabled ? AppSettings.translateHotkey : nil
+        qaHotkey = AppSettings.qaEnabled ? AppSettings.qaHotkey : nil
     }
 
     /// Start monitoring. Returns false if accessibility permission is missing.
@@ -80,6 +92,8 @@ final class KeyMonitor {
         holdActive = false
         toggleActive = false
         dashboardActive = false
+        translateActive = false
+        qaActive = false
     }
 
     // MARK: - Event handling
@@ -92,6 +106,49 @@ final class KeyMonitor {
 
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
+
+        // Translate and QA are evaluated BEFORE the hold key: their default
+        // chords share Fn with the default hold key, and the hold branch
+        // swallows (`return nil`) every flagsChanged while Fn is down — placed
+        // after it, the chord's second key would never be seen.
+
+        // --- Translate key (hold-style) ---
+        if let tk = translateHotkey {
+            if let (down, matched) = match(tk, type: type, keyCode: keyCode, flags: flags) {
+                if matched {
+                    if down && !translateActive {
+                        translateActive = true
+                        DispatchQueue.main.async { [weak self] in self?.onTranslateDown?() }
+                        if shouldSuppress(tk) { return nil }
+                    } else if !down && translateActive {
+                        translateActive = false
+                        DispatchQueue.main.async { [weak self] in self?.onTranslateUp?() }
+                        if shouldSuppress(tk) { return nil }
+                    } else if down && shouldSuppress(tk) && !tk.isModifierKey {
+                        return nil
+                    }
+                }
+            }
+        }
+
+        // --- QA key (hold-style) ---
+        if let qk = qaHotkey {
+            if let (down, matched) = match(qk, type: type, keyCode: keyCode, flags: flags) {
+                if matched {
+                    if down && !qaActive {
+                        qaActive = true
+                        DispatchQueue.main.async { [weak self] in self?.onQADown?() }
+                        if shouldSuppress(qk) { return nil }
+                    } else if !down && qaActive {
+                        qaActive = false
+                        DispatchQueue.main.async { [weak self] in self?.onQAUp?() }
+                        if shouldSuppress(qk) { return nil }
+                    } else if down && shouldSuppress(qk) && !qk.isModifierKey {
+                        return nil
+                    }
+                }
+            }
+        }
 
         // --- Hold key ---
         if let hk = holdHotkey {
@@ -160,8 +217,17 @@ final class KeyMonitor {
             return (flags.contains(.maskSecondaryFn), true)
         }
         if let modFlag = Hotkey.modifierFlag(forKeyCode: hk.keyCode) {
+            guard type == .flagsChanged else { return nil }
+            if hk.requiresFnModifier {
+                // fn+modifier chord (e.g. fn⇧): evaluate on *any* flagsChanged
+                // by flag state alone — the two keys can land in either order,
+                // and keying on the chord key's own keycode would miss the
+                // "fn arrived second" ordering. Debounced by the caller's
+                // active-state tracking.
+                return (flags.contains(modFlag) && flags.contains(.maskSecondaryFn), true)
+            }
             // Bare modifier key: a flagsChanged whose keycode is this modifier.
-            guard type == .flagsChanged, keyCode == hk.keyCode else { return nil }
+            guard keyCode == hk.keyCode else { return nil }
             return (flags.contains(modFlag), true)
         }
         // Regular key.
@@ -180,10 +246,14 @@ final class KeyMonitor {
     }
 
     /// True if exactly the required device-independent modifiers are held.
+    /// The fn flag only participates when the hotkey requires it — plenty of
+    /// keys (arrows, function row) carry fn incidentally, and pre-existing
+    /// hotkeys must keep matching regardless of fn state.
     private func modifiersMatch(_ required: UInt64, _ flags: CGEventFlags) -> Bool {
-        let relevant: UInt64 =
+        var relevant: UInt64 =
             CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue |
             CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskControl.rawValue
+        if required & Hotkey.fnModifier != 0 { relevant |= Hotkey.fnModifier }
         return (flags.rawValue & relevant) == (required & relevant)
     }
 

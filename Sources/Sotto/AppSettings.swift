@@ -51,6 +51,34 @@ enum AppSettings {
         set { SottoConfig.set(newValue, forKey: "dashboardEnabled") }
     }
 
+    /// Hold-style translate chord. Default: fn⇧ (Typeless-style).
+    static var translateHotkey: Hotkey {
+        get {
+            SottoConfig.codable("translateHotkey", as: Hotkey.self)
+                ?? Hotkey(keyCode: 56, modifiers: Hotkey.fnModifier)  // fn + L⇧
+        }
+        set { SottoConfig.setCodable(newValue, forKey: "translateHotkey") }
+    }
+
+    static var translateEnabled: Bool {
+        get { SottoConfig.bool("translateEnabled") ?? true }
+        set { SottoConfig.set(newValue, forKey: "translateEnabled") }
+    }
+
+    /// Hold-style QA key. Default: fn Space (Typeless-style).
+    static var qaHotkey: Hotkey {
+        get {
+            SottoConfig.codable("qaHotkey", as: Hotkey.self)
+                ?? Hotkey(keyCode: 49, modifiers: Hotkey.fnModifier)  // fn + Space
+        }
+        set { SottoConfig.setCodable(newValue, forKey: "qaHotkey") }
+    }
+
+    static var qaEnabled: Bool {
+        get { SottoConfig.bool("qaEnabled") ?? true }
+        set { SottoConfig.set(newValue, forKey: "qaEnabled") }
+    }
+
     /// When holding the hold-key, a quick tap (< `tapThreshold`) locks recording
     /// so it continues until the key is tapped again (Doubao-style). A real hold
     /// stops on release (push-to-talk).

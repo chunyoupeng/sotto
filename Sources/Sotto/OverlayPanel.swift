@@ -106,6 +106,12 @@ final class OverlayPanel: NSPanel {
 
     // MARK: - Public
 
+    /// Sets the listening-state accent colors (per capture mode). Takes effect
+    /// immediately when already listening.
+    func setListeningAccent(_ colors: [CGColor]) {
+        waveformView.listeningPalette = colors
+    }
+
     func show(text: String = "正在聆听…") {
         label.stringValue = text
         waveformView.state = .listening
@@ -144,10 +150,10 @@ final class OverlayPanel: NSPanel {
         updateText("转写中…")
     }
 
-    func showRefining() {
+    func showRefining(_ text: String = "润色中…") {
         waveformView.state = .refining
         waveformView.isListening = false
-        updateText("润色中…")
+        updateText(text)
     }
 
     func showResult(_ text: String) {
@@ -236,6 +242,12 @@ final class WaveformView: NSView {
         didSet { applyStateColors() }
     }
 
+    /// Accent used while `state == .listening` — swapped per capture mode
+    /// (dictation / translate / QA) so each mode reads as its own color.
+    var listeningPalette: [CGColor] = SottoTheme.State.listening {
+        didSet { if state == .listening { applyStateColors() } }
+    }
+
     private let grad = CAGradientLayer()        // gradient, masked to the fill
     private let shape = CAShapeLayer()          // crisp fill (the mask)
     private let midGlow = CAShapeLayer()        // medium halo
@@ -295,7 +307,7 @@ final class WaveformView: NSView {
     private func applyStateColors() {
         let colors: [CGColor]
         switch state {
-        case .listening:    colors = SottoTheme.State.listening
+        case .listening:    colors = listeningPalette
         case .transcribing:  colors = SottoTheme.State.transcribing
         case .refining:      colors = SottoTheme.State.refining
         case .result:        colors = SottoTheme.State.result

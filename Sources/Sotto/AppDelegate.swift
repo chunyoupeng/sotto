@@ -14,12 +14,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recState: RecState = .idle
     private var holdStart: Date?
 
+    /// What the current capture session's result is for: typing the polished
+    /// transcript, typing a translation, or answering a spoken question.
+    private enum CaptureMode { case dictation, translate, qa }
+    private var captureMode: CaptureMode = .dictation
+    /// Name of the app being dictated into, captured when recording starts
+    /// (the overlay is non-activating, so it's still frontmost then).
+    private var captureFrontApp: String?
+    private lazy var qaPanel = QAPanel()
+
     private lazy var settingsWindow = SettingsWindow()
-    private let dashboardPopover = NSPopover()
-    private lazy var dashboardVC = DashboardViewController()
-    // Separate instance for the standalone window (a VC's view can't be in two
-    // places at once); used by the global hotkey so it works even when the
-    // menu-bar icon is hidden behind the notch.
     private lazy var dashboardWindowVC = DashboardViewController()
     private var dashboardWindow: NSWindow?
 
@@ -38,7 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMainMenu()
         setupStatusBar()
         setupSpeechCallbacks()
-        setupDashboard()
         showMainWindow()
 
         settingsWindow.onSettingsChanged = { [weak self] in self?.reloadFromSettings() }
@@ -53,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyMonitor.onHoldUp = { [weak self] in self?.handleHoldUp() }
         keyMonitor.onToggleDown = { [weak self] in self?.handleToggle() }
         keyMonitor.onDashboardDown = { [weak self] in self?.toggleDashboardWindow() }
+        keyMonitor.onTranslateDown = { [weak self] in self?.handleTranslateDown() }
+        keyMonitor.onTranslateUp = { [weak self] in self?.handleTranslateUp() }
+        keyMonitor.onQADown = { [weak self] in self?.handleQADown() }
+        keyMonitor.onQAUp = { [weak self] in self?.handleQAUp() }
         if !keyMonitor.start() {
             showAccessibilityAlert()
         }
@@ -81,7 +88,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard isEnabled else { return }
         switch recState {
         case .idle: startCapture(locked: false)
-        case .locked: stopAndFinish()   // pressing the hold key again ends a locked session
+        case .locked:
+            // Pressing the hold key again ends a locked *dictation* session.
+            // Locked translate/QA sessions are ended by their own chord —
+            // if the hold key (the chord's Fn half) ended them, the chord's
+            // second key would land on an idle state and instantly start a
+            // fresh capture.
+            if captureMode == .dictation { stopAndFinish() }
         case .holding: break
         }
     }
@@ -104,17 +117,113 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { stopAndFinish() }
     }
 
+    /// True when the translate hotkey itself started the capture (as opposed
+    /// to upgrading a session the hold key had already started). Decides
+    /// which key's release ends the session.
+    private var translateChordInitiated = false
+
+    /// Translate chord pressed. Idle → start a translate capture; while a
+    /// dictation capture is running (e.g. the chord shares Fn with the hold
+    /// key and Fn landed first) → upgrade the session to translate mode.
+    private func handleTranslateDown() {
+        guard isEnabled else { return }
+        switch recState {
+        case .idle:
+            startCapture(locked: false, mode: .translate)
+            translateChordInitiated = recState != .idle  // capture actually started
+        case .holding, .locked:
+            if captureMode == .translate {
+                // Second tap of the chord ends a locked translate session.
+                if recState == .locked { stopAndFinish() }
+            } else if captureMode == .dictation {
+                captureMode = .translate
+                applyOverlayAccent(for: .translate)
+                overlayPanel.updateText(listeningText(for: .translate))
+            }
+        }
+    }
+
+    private func handleTranslateUp() {
+        // In an upgraded session the hold key's own release ends it (releasing
+        // just the chord's other half keeps recording); only a chord-initiated
+        // session reacts here — with the same smart tap-to-lock as the hold key.
+        guard translateChordInitiated, recState == .holding, captureMode == .translate else { return }
+        let elapsed = holdStart.map { Date().timeIntervalSince($0) } ?? .infinity
+        if AppSettings.smartTapToLock && elapsed < AppSettings.tapThreshold {
+            recState = .locked
+            overlayPanel.updateText("持续聆听 · 翻译（再按一次结束）")
+        } else {
+            stopAndFinish()
+        }
+    }
+
+    /// QA chord pressed. Like translate, the default chord shares Fn with the
+    /// hold key, so Fn landing first may already have started a dictation
+    /// capture — upgrade it instead of ignoring the press.
+    private func handleQADown() {
+        guard isEnabled else { return }
+        switch recState {
+        case .idle:
+            startCapture(locked: false, mode: .qa)
+        case .holding, .locked:
+            if captureMode == .qa {
+                // Second tap of the chord ends a locked QA session.
+                if recState == .locked { stopAndFinish() }
+            } else if captureMode == .dictation {
+                captureMode = .qa
+                applyOverlayAccent(for: .qa)
+                overlayPanel.updateText(listeningText(for: .qa))
+            }
+        }
+    }
+
+    /// Same smart tap-to-lock as the hold key: a quick tap of the chord keeps
+    /// listening (tap again to finish), a real hold stops on release — so a
+    /// tap never commits a fraction of a second of nothing.
+    private func handleQAUp() {
+        guard recState == .holding, captureMode == .qa else { return }
+        let elapsed = holdStart.map { Date().timeIntervalSince($0) } ?? .infinity
+        if AppSettings.smartTapToLock && elapsed < AppSettings.tapThreshold {
+            recState = .locked
+            overlayPanel.updateText("持续聆听 · 问答（再按一次结束）")
+        } else {
+            stopAndFinish()
+        }
+    }
+
     // MARK: - Capture lifecycle
 
-    private func startCapture(locked: Bool) {
+    private func startCapture(locked: Bool, mode: CaptureMode = .dictation) {
         guard isEnabled, recState == .idle else { return }
         LLMRefiner.shared.cancel()
         recState = locked ? .locked : .holding
         holdStart = Date()
+        captureMode = mode
+        translateChordInitiated = false
+        captureFrontApp = NSWorkspace.shared.frontmostApplication?.localizedName
         updateStatusIcon(recording: true)
-        overlayPanel.show(text: "正在聆听…")
+        applyOverlayAccent(for: mode)
+        overlayPanel.show(text: listeningText(for: mode))
         NSSound(named: .init("Tink"))?.play()
         speechEngine.startRecording()
+    }
+
+    private func listeningText(for mode: CaptureMode) -> String {
+        switch mode {
+        case .dictation: return "正在聆听…"
+        case .translate: return "正在聆听 · 翻译 → \(LLMRefiner.shared.translateTargetLanguage)"
+        case .qa: return "正在聆听 · 问答"
+        }
+    }
+
+    /// Waveform accent per capture mode: blue = dictation, green = translate,
+    /// pink = QA — the color tells the mode at a glance.
+    private func applyOverlayAccent(for mode: CaptureMode) {
+        switch mode {
+        case .dictation: overlayPanel.setListeningAccent(SottoTheme.State.listening)
+        case .translate: overlayPanel.setListeningAccent(SottoTheme.State.listeningTranslate)
+        case .qa: overlayPanel.setListeningAccent(SottoTheme.State.listeningQA)
+        }
     }
 
     private func stopAndFinish() {
@@ -155,10 +264,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        switch captureMode {
+        case .dictation: finishDictation(rawText: rawText, audioURL: audioURL, duration: duration)
+        case .translate: finishTranslate(rawText: rawText, audioURL: audioURL, duration: duration)
+        case .qa: finishQA(rawText: rawText, audioURL: audioURL)
+        }
+    }
+
+    private func finishDictation(rawText: String, audioURL: URL?, duration: TimeInterval) {
         let refiner = LLMRefiner.shared
         if refiner.isEnabled && refiner.isConfigured {
             overlayPanel.showRefining()
-            refiner.refine(rawText) { [weak self] result in
+            refiner.refine(rawText, frontApp: captureFrontApp) { [weak self] result in
                 guard let self else { return }
                 let refined: String
                 switch result {
@@ -178,6 +295,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else {
             commitResult(raw: rawText, refined: rawText, audioURL: audioURL, duration: duration)
+        }
+    }
+
+    private func finishTranslate(rawText: String, audioURL: URL?, duration: TimeInterval) {
+        let refiner = LLMRefiner.shared
+        guard refiner.isConfigured else {
+            if let u = audioURL { try? FileManager.default.removeItem(at: u) }
+            dismissWithNotice("翻译需要先在设置中配置大模型")
+            return
+        }
+        overlayPanel.showRefining("翻译中…")
+        refiner.translate(rawText, frontApp: captureFrontApp) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let translated) where !translated.isEmpty:
+                self.commitResult(raw: rawText, refined: translated,
+                                  audioURL: audioURL, duration: duration)
+            case .failure(LLMRefiner.RefinerError.cancelled):
+                if let u = audioURL { try? FileManager.default.removeItem(at: u) }
+            default:
+                // Typing the untranslated original into a foreign-language
+                // context is worse than typing nothing — notify and drop.
+                if let u = audioURL { try? FileManager.default.removeItem(at: u) }
+                self.dismissWithNotice("翻译失败")
+            }
+        }
+    }
+
+    private func finishQA(rawText: String, audioURL: URL?) {
+        // QA never touches the target document or history — the answer only
+        // lives in the floating panel.
+        if let u = audioURL { try? FileManager.default.removeItem(at: u) }
+        let refiner = LLMRefiner.shared
+        guard refiner.isConfigured else {
+            dismissWithNotice("问答需要先在设置中配置大模型")
+            return
+        }
+        overlayPanel.showRefining("思考中…")
+        refiner.answer(rawText) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let answer) where !answer.isEmpty:
+                self.overlayPanel.dismiss()
+                self.qaPanel.present(question: rawText, answer: answer)
+            case .failure(LLMRefiner.RefinerError.cancelled):
+                break
+            default:
+                self.dismissWithNotice("回答失败")
+            }
         }
     }
 
@@ -208,7 +374,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.overlayPanel.dismiss()
         }
 
-        if dashboardPopover.isShown { dashboardVC.refresh() }
         if let win = dashboardWindow, win.isVisible { dashboardWindowVC.refresh() }
     }
 
@@ -253,36 +418,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.contentTintColor = recording ? .systemRed : nil
     }
 
+    /// Left click summons the main window (the old popover duplicated it);
+    /// right click shows the basic menu (settings, quit, …).
     @objc private func statusItemClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp {
             showMenu()
         } else {
-            toggleDashboard()
+            toggleDashboardWindow()
         }
     }
 
     // MARK: - Dashboard
-
-    private func setupDashboard() {
-        dashboardVC.onOpenSettings = { [weak self] in
-            self?.dashboardPopover.performClose(nil)
-            self?.openSettings()
-        }
-        dashboardPopover.contentViewController = dashboardVC
-        dashboardPopover.behavior = .transient
-        dashboardPopover.appearance = NSAppearance(named: .darkAqua)
-    }
-
-    private func toggleDashboard() {
-        if dashboardPopover.isShown {
-            dashboardPopover.performClose(nil)
-            return
-        }
-        guard let button = statusItem.button else { return }
-        dashboardVC.refresh()
-        NSApp.activate(ignoringOtherApps: true)
-        dashboardPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    }
 
     /// The real, ⌘-Tab-switchable main window. Created lazily and reused.
     private func mainWindowIfNeeded() -> NSWindow {
@@ -402,7 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func openDashboardFromMenu() { toggleDashboard() }
+    @objc private func openDashboardFromMenu() { showMainWindow() }
 
     // MARK: - Actions
 
