@@ -61,6 +61,28 @@ enum PromptComposer {
             """
     }
 
+    /// A short context line for the ASR model's own system prompt, biasing
+    /// recognition toward the user's hotwords *at decode time* — i.e. before the
+    /// LLM refine pass ever sees the text. Returns nil when there are no usable
+    /// hotwords.
+    ///
+    /// Deliberately a short semantic sentence rather than a bare token dump:
+    /// Qwen3-ASR aligns pronunciations against the context's semantic
+    /// probability, and an over-long or irrelevant list is a known trigger for
+    /// the model looping/hallucinating the terms. So this is a gentle nudge, and
+    /// the list is capped.
+    static let maxAsrHotwords = 60
+
+    static func asrContext(_ hotwords: [String]) -> String? {
+        let cleaned = hotwords
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .prefix(maxAsrHotwords)
+        guard !cleaned.isEmpty else { return nil }
+        let list = cleaned.joined(separator: "、")
+        return "本次语音可能出现以下专有名词或术语，请优先按此写法转写：\(list)。"
+    }
+
     /// 【当前场景】 premise naming the app being dictated into, or nil when
     /// unknown. Used for term disambiguation only — the base prompt stays a
     /// proofreader, so no tone-shifting is requested.

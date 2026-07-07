@@ -401,6 +401,11 @@ final class SpeechEngine {
 
             var req: [String: Any] = ["id": id, "audio": audioURL.path]
             if let language { req["language"] = language }
+            // Bias recognition toward the user's hotwords at decode time (the
+            // ASR "first layer"), passed as Qwen3-ASR's system prompt.
+            if let context = PromptComposer.asrContext(SottoConfig.readHotwords()) {
+                req["system_prompt"] = context
+            }
             guard var line = try? JSONSerialization.data(withJSONObject: req) else {
                 self.pending.removeValue(forKey: id)
                 completion(.failure(EngineError.transcription("failed to encode request")))

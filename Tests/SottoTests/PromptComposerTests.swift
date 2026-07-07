@@ -49,6 +49,27 @@ final class PromptComposerTests: XCTestCase {
         XCTAssertTrue(block.contains("- MLX"))
     }
 
+    // MARK: - ASR context (decode-time biasing)
+
+    func testAsrContextNilWhenNoUsableHotwords() {
+        XCTAssertNil(PromptComposer.asrContext([]))
+        XCTAssertNil(PromptComposer.asrContext(["", "   "]))
+    }
+
+    func testAsrContextListsCleanedHotwords() {
+        let ctx = PromptComposer.asrContext(["Sotto", "  MLX  ", "", "Parakeet"])
+        XCTAssertNotNil(ctx)
+        XCTAssertTrue(ctx!.contains("Sotto、MLX、Parakeet"))
+    }
+
+    func testAsrContextCapsListLength() {
+        let ctx = PromptComposer.asrContext((1...200).map { "w\($0)" })!
+        // Only the first `maxAsrHotwords` are kept; the boundary word is present
+        // and the one just past it is not.
+        XCTAssertTrue(ctx.contains("w\(PromptComposer.maxAsrHotwords)"))
+        XCTAssertFalse(ctx.contains("w\(PromptComposer.maxAsrHotwords + 1)"))
+    }
+
     // MARK: - System prompt composition
 
     func testPlaceholderIsReplaced() {

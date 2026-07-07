@@ -15,7 +15,8 @@ stdout (one JSON object per line):
     {"type": "fatal",  "error": "..."}                 # model failed to load
 
 stdin (one JSON object per line):
-    {"id": <n>, "audio": "/path/to/file.wav", "language": "en-US"}
+    {"id": <n>, "audio": "/path/to/file.wav", "language": "en-US",
+     "system_prompt": "optional context that biases recognition (hotwords)"}
 
 Anything written to stderr is treated as diagnostic logging by the host app.
 """
@@ -69,6 +70,7 @@ def main():
         req_id = req.get("id")
         audio = req.get("audio")
         language = req.get("language") or None
+        system_prompt = req.get("system_prompt") or None
 
         if not audio or not os.path.exists(audio):
             emit({"type": "error", "id": req_id, "error": f"audio not found: {audio}"})
@@ -78,7 +80,15 @@ def main():
             kwargs = {}
             if language:
                 kwargs["language"] = language
-            result = model.generate(audio, **kwargs)
+            # Qwen3-ASR accepts a system prompt that biases decoding toward the
+            # user's hotwords. Older models may not, so pass it defensively.
+            if system_prompt:
+                kwargs["system_prompt"] = system_prompt
+            try:
+                result = model.generate(audio, **kwargs)
+            except TypeError:
+                kwargs.pop("system_prompt", None)
+                result = model.generate(audio, **kwargs)
             text = getattr(result, "text", None)
             if text is None:
                 text = str(result)

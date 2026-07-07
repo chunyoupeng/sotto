@@ -130,6 +130,7 @@ final class SettingsWindow: NSPanel {
     private let targetLanguageField = NSTextField()
     private let llmEnabledBox = NSButton(checkboxWithTitle: "启用大模型润色", target: nil, action: nil)
     private let promptTextView = NSTextView()
+    private let hotwordsTextView = NSTextView()
     private let statusLabel = NSTextField(labelWithString: "")
 
     private let tabSelector = NSSegmentedControl(
@@ -152,7 +153,7 @@ final class SettingsWindow: NSPanel {
 
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 760),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         title = "Sotto 设置"
@@ -375,26 +376,12 @@ final class SettingsWindow: NSPanel {
         let promptHeader = NSStackView(views: [promptCaption, NSView(), resetPromptBtn])
         promptHeader.orientation = .horizontal
 
-        let promptScroll = NSScrollView()
-        promptScroll.translatesAutoresizingMaskIntoConstraints = false
-        promptScroll.hasVerticalScroller = true
-        promptScroll.borderType = .noBorder
-        promptScroll.drawsBackground = false
-        promptScroll.wantsLayer = true
-        promptScroll.layer?.cornerRadius = 8
-        promptScroll.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
-        promptScroll.layer?.borderWidth = 0.5
-        promptScroll.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
-        promptScroll.documentView = promptTextView
-        promptTextView.isRichText = false
-        promptTextView.drawsBackground = false
-        promptTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        promptTextView.isAutomaticQuoteSubstitutionEnabled = false
-        promptTextView.isAutomaticDashSubstitutionEnabled = false
-        promptTextView.isVerticallyResizable = true
-        promptTextView.isHorizontallyResizable = false
-        promptTextView.textContainer?.widthTracksTextView = true
-        promptScroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
+        let promptScroll = codeEditorScroll(promptTextView, height: 150)
+
+        // Editable hotword list — injected into the refine/translate prompt.
+        let hotwordsCaption = NSTextField(labelWithString: "热词表（每行一个词，# 开头为注释，保存后立即生效）：")
+        hotwordsCaption.font = .systemFont(ofSize: 12)
+        let hotwordsScroll = codeEditorScroll(hotwordsTextView, height: 96)
 
         let stack = NSStackView(views: [
             llmEnabledBox,
@@ -406,11 +393,40 @@ final class SettingsWindow: NSPanel {
             statusLabel,
             promptHeader,
             promptScroll,
+            hotwordsCaption,
+            hotwordsScroll,
         ])
         stack.setHuggingPriority(.defaultLow, for: .horizontal)
         promptHeader.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         promptScroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        hotwordsScroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         return wrap(stack)
+    }
+
+    /// A dark, monospaced, plain-text editor in a rounded scroll view — shared
+    /// by the refine prompt and the hotword list.
+    private func codeEditorScroll(_ textView: NSTextView, height: CGFloat) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 8
+        scroll.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
+        scroll.layer?.borderWidth = 0.5
+        scroll.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        scroll.documentView = textView
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        scroll.heightAnchor.constraint(equalToConstant: height).isActive = true
+        return scroll
     }
 
     @objc private func resetPrompt() {
@@ -496,6 +512,7 @@ final class SettingsWindow: NSPanel {
         modelField.stringValue = refiner.model
         llmEnabledBox.state = refiner.isEnabled ? .on : .off
         promptTextView.string = refiner.systemPrompt
+        hotwordsTextView.string = SottoConfig.readHotwordsRaw()
         targetLanguageField.stringValue = refiner.translateTargetLanguage
     }
 
@@ -528,6 +545,7 @@ final class SettingsWindow: NSPanel {
         refiner.model = modelField.stringValue
         refiner.isEnabled = llmEnabledBox.state == .on
         refiner.systemPrompt = promptTextView.string
+        SottoConfig.writeHotwords(hotwordsTextView.string)
         let lang = targetLanguageField.stringValue.trimmingCharacters(in: .whitespaces)
         refiner.translateTargetLanguage = lang.isEmpty ? "English" : lang
 

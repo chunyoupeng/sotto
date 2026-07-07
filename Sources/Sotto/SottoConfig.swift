@@ -93,10 +93,22 @@ enum SottoConfig {
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
     }
 
+    /// The raw hotwords file text, comments and all — for editing in Settings.
+    /// Falls back to the seed template when the file doesn't exist yet.
+    static func readHotwordsRaw() -> String {
+        (try? String(contentsOf: hotwordsURL, encoding: .utf8)) ?? hotwordsTemplate
+    }
+
+    static func writeHotwords(_ text: String) {
+        try? FileManager.default.createDirectory(at: homeDir, withIntermediateDirectories: true)
+        try? text.write(to: hotwordsURL, atomically: true, encoding: .utf8)
+    }
+
     private static let hotwordsTemplate = """
         # Sotto 热词表：每行一个词，以 # 开头的行是注释。
-        # 写上常被语音识别弄错的人名、项目名、品牌、术语的正确写法，
-        # 润色时会按这里的写法纠正同音/近音的误识别。
+        # 写上常被语音识别弄错的人名、项目名、品牌、术语的正确写法：
+        # 识别时会把它们作为上下文提示，让语音模型优先按此写法转写；
+        # 之后润色时也会再按这里的写法纠正同音/近音的误识别。
         # 示例（删掉前面的 # 即生效）：
         # Sotto
         # MLX
