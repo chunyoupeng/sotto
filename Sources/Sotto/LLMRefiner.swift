@@ -170,16 +170,43 @@ final class LLMRefiner {
             completion: completion)
     }
 
+    /// Prior Q&A exchanges from the *current* QA panel session, replayed as chat
+    /// history so follow-up questions have context. Lives as long as the panel
+    /// stays open; `resetQAConversation()` clears it when a new question begins
+    /// after the panel was dismissed (Esc/✕), so reopening starts fresh.
+    private var qaTurns: [(question: String, answer: String)] = []
+
+    private func recordQATurn(question: String, answer: String) {
+        qaTurns.append((question: question, answer: answer))
+        // A panel session is short-lived, but a long-lived panel shouldn't grow
+        // the prompt without bound — keep only the most recent exchanges.
+        if qaTurns.count > 12 { qaTurns.removeFirst(qaTurns.count - 12) }
+    }
+
+    /// Drop the QA conversation so the next question starts with no context.
+    func resetQAConversation() { qaTurns.removeAll() }
+
     /// Answer a spoken question for the QA panel. Unlike refine/translate the
     /// spoken text IS the instruction here, so it travels without an envelope.
+    /// Prior exchanges in the open session are replayed so follow-ups have
+    /// context; the caller resets the session when the panel is reopened.
     func answer(_ text: String, completion: @escaping (Result<String, Error>) -> Void) {
+        var messages: [[String: String]] = [
+            ["role": "system", "content": PromptComposer.qaSystemPrompt],
+        ]
+        for turn in qaTurns {
+            messages.append(["role": "user", "content": turn.question])
+            messages.append(["role": "assistant", "content": turn.answer])
+        }
+        messages.append(["role": "user", "content": text])
         currentTask = Self.request(
             text: text, baseURL: apiBaseURL, apiKey: apiKey, model: model,
-            messages: [
-                ["role": "system", "content": PromptComposer.qaSystemPrompt],
-                ["role": "user", "content": text],
-            ],
-            completion: completion)
+            messages: messages) { [weak self] result in
+                if case let .success(answer) = result, !answer.isEmpty {
+                    self?.recordQATurn(question: text, answer: answer)
+                }
+                completion(result)
+            }
     }
 
     /// One-off refine with explicit connection parameters — used by the Settings

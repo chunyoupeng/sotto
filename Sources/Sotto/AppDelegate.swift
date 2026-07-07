@@ -332,6 +332,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dismissWithNotice("问答需要先在设置中配置大模型")
             return
         }
+        // A question asked while the panel is still open continues the
+        // conversation with context; a question asked after it was dismissed
+        // (Esc/✕ → not visible) starts a fresh session.
+        if !qaPanel.isVisible { refiner.resetQAConversation() }
         overlayPanel.showRefining("思考中…")
         refiner.answer(rawText) { [weak self] result in
             guard let self else { return }
