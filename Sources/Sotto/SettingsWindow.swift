@@ -416,7 +416,6 @@ final class SettingsWindow: NSPanel {
         scroll.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
         scroll.layer?.borderWidth = 0.5
         scroll.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
-        scroll.documentView = textView
         textView.isRichText = false
         textView.drawsBackground = false
         textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -427,15 +426,37 @@ final class SettingsWindow: NSPanel {
         textView.insertionPointColor = SottoTheme.primaryLabelColor
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
+        // The document view is sized by the clip view via its autoresizing mask,
+        // not Auto Layout. Without `.width` here the text view keeps its initial
+        // zero width, so its text container is 0-wide and nothing ever draws
+        // (even though the string and color are correct). Give it a real starting
+        // width and let it track the clip view horizontally while growing
+        // vertically with the text.
+        textView.minSize = NSSize(width: 0, height: height)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.frame = NSRect(x: 0, y: 0, width: 480, height: height)
         textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 480, height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = textView
         scroll.heightAnchor.constraint(equalToConstant: height).isActive = true
         return scroll
     }
 
+    /// Assign text to a code-editor text view and (re)apply the light color.
+    /// A plain (non-rich) NSTextView rebuilds its content from the default
+    /// attributes on `.string =`, discarding the `textColor` set at construction
+    /// and leaving near-black text on the dark editor. Re-setting `textColor`
+    /// afterwards recolors the whole existing range, so the text stays visible.
+    private func setEditorText(_ textView: NSTextView, _ text: String) {
+        textView.string = text
+        textView.textColor = SottoTheme.primaryLabelColor
+    }
+
     @objc private func resetPrompt() {
-        promptTextView.string = LLMRefiner.defaultSystemPrompt
+        setEditorText(promptTextView, LLMRefiner.defaultSystemPrompt)
     }
 
     @objc private func openSottoFolder() {
@@ -516,8 +537,8 @@ final class SettingsWindow: NSPanel {
         apiKeyField.stringValue = refiner.apiKey
         modelField.stringValue = refiner.model
         llmEnabledBox.state = refiner.isEnabled ? .on : .off
-        promptTextView.string = refiner.systemPrompt
-        hotwordsTextView.string = SottoConfig.readHotwordsRaw()
+        setEditorText(promptTextView, refiner.systemPrompt)
+        setEditorText(hotwordsTextView, SottoConfig.readHotwordsRaw())
         targetLanguageField.stringValue = refiner.translateTargetLanguage
     }
 
