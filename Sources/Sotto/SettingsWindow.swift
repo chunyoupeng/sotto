@@ -420,6 +420,11 @@ final class SettingsWindow: NSPanel {
         textView.isRichText = false
         textView.drawsBackground = false
         textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        // Without an explicit color the text view falls back to NSColor.textColor,
+        // which resolves to near-black against this dark editor background and
+        // renders the content invisible. Match the window's light label color.
+        textView.textColor = SottoTheme.primaryLabelColor
+        textView.insertionPointColor = SottoTheme.primaryLabelColor
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isVerticallyResizable = true
