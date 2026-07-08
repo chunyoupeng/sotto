@@ -16,9 +16,12 @@ final class HotkeyRecorderButton: NSButton {
 
     private var monitor: Any?
     private var recording = false
-    /// Fn is held down; commit `.fn` only if it's released alone, so fn-combos
-    /// (fn⇧, fn Space) remain recordable.
-    private var fnArmed = false
+    /// Modifier flags accumulated while modifier keys are held. Committing
+    /// only on release (instead of on the first press) lets multi-modifier
+    /// chords (⌃⇧, fn⇧, …) be recorded.
+    private var chordMods: UInt64 = 0
+    /// Keycode of the last non-Fn modifier pressed; nil means only Fn was held.
+    private var chordKeyCode: Int?
 
     private static let relevantMods: UInt64 =
         CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue |
@@ -56,7 +59,8 @@ final class HotkeyRecorderButton: NSButton {
 
     private func endRecording() {
         recording = false
-        fnArmed = false
+        chordMods = 0
+        chordKeyCode = nil
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
         NotificationCenter.default.post(name: .hotkeyRecordingStopped, object: nil)
         updateTitle()
@@ -69,23 +73,30 @@ final class HotkeyRecorderButton: NSButton {
             commit(Hotkey(keyCode: Int(event.keyCode), modifiers: mods))
             return
         }
-        // flagsChanged: Fn, a bare modifier key, or a fn+modifier chord.
+        // flagsChanged: Fn and/or modifier keys. Accumulate while pressed and
+        // commit on the first release, so chords (⌃⇧, fn⇧, …) get every key.
         let flags = event.modifierFlags
         let code = Int(event.keyCode)
+        let pressed: Bool
         if code == 63 {  // the Fn key itself
-            if flags.contains(.function) {
-                fnArmed = true  // wait: alone → .fn on release; else combo below
-            } else if fnArmed {
-                commit(.fn)
-            }
+            pressed = flags.contains(.function)
+        } else if let modFlag = Hotkey.modifierFlag(forKeyCode: code) {
+            pressed = CGEventFlags(rawValue: UInt64(flags.rawValue)).contains(modFlag)
+        } else {
             return
         }
-        if let modFlag = Hotkey.modifierFlag(forKeyCode: code) {
-            // Only capture on press (flag now set).
-            let cg = CGEventFlags(rawValue: UInt64(flags.rawValue))
-            if cg.contains(modFlag) {
-                let mods: UInt64 = flags.contains(.function) ? Hotkey.fnModifier : 0
-                commit(Hotkey(keyCode: code, modifiers: mods))
+        if pressed {
+            // Keep the device-specific bits (left/right identity) so chords
+            // like R⌃R⌘ don't also fire for their left-hand twins.
+            chordMods |= UInt64(flags.rawValue)
+                & (HotkeyRecorderButton.relevantMods | Hotkey.allDeviceBits)
+            if code != 63 { chordKeyCode = code }
+        } else if chordMods != 0 {
+            if let keyCode = chordKeyCode, let own = Hotkey.modifierFlag(forKeyCode: keyCode) {
+                let ownBits = own.rawValue | (Hotkey.deviceBit(forKeyCode: keyCode) ?? 0)
+                commit(Hotkey(keyCode: keyCode, modifiers: chordMods & ~ownBits))
+            } else {
+                commit(.fn)  // only Fn was held
             }
         }
     }

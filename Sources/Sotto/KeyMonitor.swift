@@ -218,13 +218,24 @@ final class KeyMonitor {
         }
         if let modFlag = Hotkey.modifierFlag(forKeyCode: hk.keyCode) {
             guard type == .flagsChanged else { return nil }
-            if hk.requiresFnModifier {
-                // fn+modifier chord (e.g. fn⇧): evaluate on *any* flagsChanged
-                // by flag state alone — the two keys can land in either order,
+            if hk.modifiers != 0 {
+                // Modifier chord (fn⇧, ⌃⇧, …): evaluate on *any* flagsChanged
+                // by flag state alone — the keys can land in either order,
                 // and keying on the chord key's own keycode would miss the
-                // "fn arrived second" ordering. Debounced by the caller's
-                // active-state tracking.
-                return (flags.contains(modFlag) && flags.contains(.maskSecondaryFn), true)
+                // "other key arrived second" ordering. Debounced by the
+                // caller's active-state tracking. Matching is *exact* (no
+                // extra modifiers) and, when the chord was recorded with
+                // left/right identity, side-specific via the device bits.
+                var required = hk.modifiers | modFlag.rawValue
+                var relevant: UInt64 =
+                    CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue |
+                    CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskControl.rawValue
+                if required & Hotkey.fnModifier != 0 { relevant |= Hotkey.fnModifier }
+                if hk.modifiers & Hotkey.allDeviceBits != 0 {
+                    required |= Hotkey.deviceBit(forKeyCode: hk.keyCode) ?? 0
+                    relevant |= Hotkey.allDeviceBits
+                }
+                return ((flags.rawValue & relevant) == required, true)
             }
             // Bare modifier key: a flagsChanged whose keycode is this modifier.
             guard keyCode == hk.keyCode else { return nil }

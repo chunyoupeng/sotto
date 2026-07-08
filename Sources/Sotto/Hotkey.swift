@@ -2,7 +2,8 @@ import AppKit
 
 /// A user-configurable global hotkey. Three flavors are supported:
 /// - the **Fn** key (`keyCode == Hotkey.fnKeyCode`)
-/// - a **modifier key on its own** (e.g. Right ⌘) — detected via `isModifierKey`
+/// - a **modifier key**, alone or in a chord with other modifiers
+///   (e.g. Right ⌘, ⌃⇧, fn⇧) — detected via `isModifierKey`
 /// - a **regular key**, optionally combined with modifiers (e.g. ⌥Space)
 struct Hotkey: Codable, Equatable {
     static let fnKeyCode = -1
@@ -10,7 +11,8 @@ struct Hotkey: Codable, Equatable {
     /// CGKeyCode of the trigger key, or `fnKeyCode` for the Fn key.
     var keyCode: Int
     /// Required modifier mask (raw `CGEventFlags`, device-independent bits only).
-    /// Ignored when the hotkey is the Fn key or a bare modifier key.
+    /// For a modifier-key hotkey this holds the *other* modifiers of the chord
+    /// (empty for a bare modifier). Ignored when the hotkey is the Fn key.
     var modifiers: UInt64
 
     var isFn: Bool { keyCode == Hotkey.fnKeyCode }
@@ -45,21 +47,40 @@ struct Hotkey: Codable, Equatable {
         }
     }
 
+    /// Maps a modifier key's keycode to its device-*specific* flag bit
+    /// (IOKit NX_DEVICE…KEYMASK), which distinguishes left from right.
+    /// Stored alongside the independent masks in `modifiers` so chords can
+    /// require the exact physical keys they were recorded with.
+    static func deviceBit(forKeyCode code: Int) -> UInt64? {
+        switch code {
+        case 54: return 0x0000_0010  // Right ⌘
+        case 55: return 0x0000_0008  // ⌘
+        case 56: return 0x0000_0002  // ⇧
+        case 60: return 0x0000_0004  // Right ⇧
+        case 58: return 0x0000_0020  // ⌥
+        case 61: return 0x0000_0040  // Right ⌥
+        case 59: return 0x0000_0001  // ⌃
+        case 62: return 0x0000_2000  // Right ⌃
+        default: return nil
+        }
+    }
+
+    /// Union of all device-specific modifier bits above.
+    static let allDeviceBits: UInt64 = 0x0000_207F
+
     // MARK: - Display
 
-    /// Human-readable form, e.g. "fn", "⌘", "⌥Space", "fn⇧".
+    /// Human-readable form, e.g. "fn", "⌘", "⌥Space", "fn⇧", "⌃⇧".
     var displayString: String {
         if isFn { return "fn" }
-        if isModifierKey {
-            let name = Hotkey.keyName(forKeyCode: keyCode)
-            return requiresFnModifier ? "fn" + name : name
-        }
+        let ownFlag = Hotkey.modifierFlag(forKeyCode: keyCode)?.rawValue ?? 0
+        let extra = modifiers & ~ownFlag
         var s = ""
         if requiresFnModifier { s += "fn" }
-        if modifiers & CGEventFlags.maskControl.rawValue != 0 { s += "⌃" }
-        if modifiers & CGEventFlags.maskAlternate.rawValue != 0 { s += "⌥" }
-        if modifiers & CGEventFlags.maskShift.rawValue != 0 { s += "⇧" }
-        if modifiers & CGEventFlags.maskCommand.rawValue != 0 { s += "⌘" }
+        if extra & CGEventFlags.maskControl.rawValue != 0 { s += "⌃" }
+        if extra & CGEventFlags.maskAlternate.rawValue != 0 { s += "⌥" }
+        if extra & CGEventFlags.maskShift.rawValue != 0 { s += "⇧" }
+        if extra & CGEventFlags.maskCommand.rawValue != 0 { s += "⌘" }
         s += Hotkey.keyName(forKeyCode: keyCode)
         return s.isEmpty ? "—" : s
     }
