@@ -246,9 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.recState = .idle
             self.overlayPanel.updateText("出错：\(msg)")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                self.overlayPanel.dismiss()
-            }
+            self.overlayPanel.dismiss(after: 1.5)
         }
 
         speechEngine.onAudioLevel = { [weak self] level in
@@ -370,13 +368,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Inject immediately — the overlay is a non-activating panel, so focus
         // never left the target field and there is nothing to wait for. The
-        // result stays on screen briefly for feedback while the text lands.
+        // typed text (plus the Pop sound) is the feedback, so the overlay can
+        // go right away; the fade-out still flashes the result briefly.
         overlayPanel.showResult(refined)
         textInjector.inject(refined)
         NSSound(named: .init("Pop"))?.play()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            self?.overlayPanel.dismiss()
-        }
+        overlayPanel.dismiss()
 
         if let win = dashboardWindow, win.isVisible { dashboardWindowVC.refresh() }
     }
@@ -386,9 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// so "nothing to type" still reads as "Sotto heard you," not "Sotto froze."
     private func dismissWithNotice(_ text: String) {
         overlayPanel.showCancelled(text)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            self?.overlayPanel.dismiss()
-        }
+        overlayPanel.dismiss(after: 0.8)
     }
 
     // MARK: - Status bar

@@ -112,7 +112,13 @@ final class OverlayPanel: NSPanel {
         waveformView.listeningPalette = colors
     }
 
+    /// Bumped on every `show()`. Delayed dismissals capture the value they were
+    /// scheduled under and bail if a new session has taken over the panel since —
+    /// otherwise a stale timer would hide the next session's listening UI.
+    private var generation = 0
+
     func show(text: String = "正在聆听…") {
+        generation += 1
         label.stringValue = text
         waveformView.state = .listening
         waveformView.isListening = true
@@ -176,6 +182,7 @@ final class OverlayPanel: NSPanel {
 
     func dismiss() {
         waveformView.isAnimating = false
+        let gen = generation
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
@@ -188,8 +195,18 @@ final class OverlayPanel: NSPanel {
                     height: capsuleHeight),
                 display: true)
         }, completionHandler: {
-            self.orderOut(nil)
+            // A show() during the fade means a new session owns the panel now.
+            if gen == self.generation { self.orderOut(nil) }
         })
+    }
+
+    /// Dismiss after `delay`, unless a new session has shown the panel since.
+    func dismiss(after delay: TimeInterval) {
+        let gen = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.generation == gen else { return }
+            self.dismiss()
+        }
     }
 
     // MARK: - Sizing
