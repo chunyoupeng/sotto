@@ -9,3 +9,6 @@ __pycache__/
 *.app/
 build_pyi/
 *.log
+
+# Claude Code local state
+.claude/

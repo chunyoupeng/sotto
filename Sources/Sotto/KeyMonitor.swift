@@ -112,16 +112,25 @@ final class KeyMonitor {
         // swallows (`return nil`) every flagsChanged while Fn is down — placed
         // after it, the chord's second key would never be seen.
 
+        // A translate/QA chord transition claims the event: when the hold key is
+        // a bare modifier that is a subset of the chord (e.g. hold = R⌃, QA =
+        // R⌃R⌘), the flagsChanged that completes the chord also carries the hold
+        // key's own keycode — letting it double as a hold press would stop the
+        // chord's session and instantly start a phantom dictation capture.
+        var chordFired = false
+
         // --- Translate key (hold-style) ---
         if let tk = translateHotkey {
             if let (down, matched) = match(tk, type: type, keyCode: keyCode, flags: flags) {
                 if matched {
                     if down && !translateActive {
                         translateActive = true
+                        chordFired = true
                         DispatchQueue.main.async { [weak self] in self?.onTranslateDown?() }
                         if shouldSuppress(tk) { return nil }
                     } else if !down && translateActive {
                         translateActive = false
+                        chordFired = true
                         DispatchQueue.main.async { [weak self] in self?.onTranslateUp?() }
                         if shouldSuppress(tk) { return nil }
                     } else if down && shouldSuppress(tk) && !tk.isModifierKey {
@@ -137,10 +146,12 @@ final class KeyMonitor {
                 if matched {
                     if down && !qaActive {
                         qaActive = true
+                        chordFired = true
                         DispatchQueue.main.async { [weak self] in self?.onQADown?() }
                         if shouldSuppress(qk) { return nil }
                     } else if !down && qaActive {
                         qaActive = false
+                        chordFired = true
                         DispatchQueue.main.async { [weak self] in self?.onQAUp?() }
                         if shouldSuppress(qk) { return nil }
                     } else if down && shouldSuppress(qk) && !qk.isModifierKey {
@@ -154,7 +165,7 @@ final class KeyMonitor {
         if let hk = holdHotkey {
             if let (down, matched) = match(hk, type: type, keyCode: keyCode, flags: flags) {
                 if matched {
-                    if down && !holdActive {
+                    if down && !holdActive && !chordFired {
                         holdActive = true
                         DispatchQueue.main.async { [weak self] in self?.onHoldDown?() }
                         if shouldSuppress(hk) { return nil }
@@ -174,7 +185,7 @@ final class KeyMonitor {
         if let tk = toggleHotkey {
             if let (down, matched) = match(tk, type: type, keyCode: keyCode, flags: flags) {
                 if matched {
-                    if down && !toggleActive {
+                    if down && !toggleActive && !chordFired {
                         toggleActive = true
                         DispatchQueue.main.async { [weak self] in self?.onToggleDown?() }
                         if shouldSuppress(tk) { return nil }
@@ -192,7 +203,7 @@ final class KeyMonitor {
         if let dk = dashboardHotkey {
             if let (down, matched) = match(dk, type: type, keyCode: keyCode, flags: flags) {
                 if matched {
-                    if down && !dashboardActive {
+                    if down && !dashboardActive && !chordFired {
                         dashboardActive = true
                         DispatchQueue.main.async { [weak self] in self?.onDashboardDown?() }
                         if shouldSuppress(dk) { return nil }

@@ -21,6 +21,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Name of the app being dictated into, captured when recording starts
     /// (the overlay is non-activating, so it's still frontmost then).
     private var captureFrontApp: String?
+    /// Mode/front-app snapshot taken in `stopAndFinish`. The transcript arrives
+    /// asynchronously, and a new capture may start (and overwrite `captureMode`)
+    /// before it does — routing the finished session by the live mode would
+    /// e.g. commit a QA question as dictation.
+    private var finishMode: CaptureMode = .dictation
+    private var finishFrontApp: String?
     private lazy var qaPanel = QAPanel()
 
     private lazy var settingsWindow = SettingsWindow()
@@ -230,6 +236,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard recState != .idle else { return }
         recState = .idle
         holdStart = nil
+        finishMode = captureMode
+        finishFrontApp = captureFrontApp
         updateStatusIcon(recording: false)
         speechEngine.stopRecording()   // → onFinalResultFull
         overlayPanel.showTranscribing()
@@ -262,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        switch captureMode {
+        switch finishMode {
         case .dictation: finishDictation(rawText: rawText, audioURL: audioURL, duration: duration)
         case .translate: finishTranslate(rawText: rawText, audioURL: audioURL, duration: duration)
         case .qa: finishQA(rawText: rawText, audioURL: audioURL)
@@ -273,7 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let refiner = LLMRefiner.shared
         if refiner.isEnabled && refiner.isConfigured {
             overlayPanel.showRefining()
-            refiner.refine(rawText, frontApp: captureFrontApp) { [weak self] result in
+            refiner.refine(rawText, frontApp: finishFrontApp) { [weak self] result in
                 guard let self else { return }
                 let refined: String
                 switch result {
@@ -304,7 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         overlayPanel.showRefining("翻译中…")
-        refiner.translate(rawText, frontApp: captureFrontApp) { [weak self] result in
+        refiner.translate(rawText, frontApp: finishFrontApp) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let translated) where !translated.isEmpty:

@@ -47,6 +47,9 @@ final class SpeechEngine {
     /// exponentially and give up (with a user-visible error) after `maxRelaunches`.
     private var relaunchAttempts = 0
     private let maxRelaunches = 5
+    /// Set once relaunching is abandoned; new requests then fail immediately
+    /// instead of queuing for a daemon that will never come up.
+    private var gaveUp = false
 
     init(locale: Locale = Locale(identifier: "zh-CN")) {
         self.locale = locale
@@ -264,11 +267,12 @@ final class SpeechEngine {
 
     /// Must run on `daemonQueue`.
     private func launchDaemon() {
+        // Launch failures retry with the same backoff as crashes: the engine or
+        // Python may live on a volume that isn't mounted yet at login. Queued
+        // requests are kept — their WAVs still exist — so they replay on success.
         guard let (exe, args) = engineCommand() else {
             logToFile("ASR engine not found (no frozen engine, no script)")
-            DispatchQueue.main.async { [weak self] in
-                self?.onError?("ASR engine not found in app bundle")
-            }
+            scheduleRelaunch()
             return
         }
 
@@ -307,9 +311,7 @@ final class SpeechEngine {
             try proc.run()
         } catch {
             logToFile("failed to launch daemon: \(error.localizedDescription)")
-            DispatchQueue.main.async { [weak self] in
-                self?.onError?("Failed to start ASR engine: \(error.localizedDescription)")
-            }
+            scheduleRelaunch()
             return
         }
 
@@ -326,18 +328,20 @@ final class SpeechEngine {
         // Fail everything in flight; also drop queued requests — their pending
         // callbacks are being failed here, so replaying the lines after a
         // relaunch would transcribe into the void (and the WAVs may be gone).
-        queuedLines.removeAll()
-        let failing = pending
-        pending.removeAll()
-        for (_, cb) in failing {
-            cb(.failure(EngineError.daemonUnavailable))
-        }
+        failAllRequests(.daemonUnavailable)
+        scheduleRelaunch()
+    }
 
+    /// Must run on `daemonQueue`. Shared backoff for a daemon that crashed and
+    /// one that never launched.
+    private func scheduleRelaunch() {
         relaunchAttempts += 1
         guard relaunchAttempts <= maxRelaunches else {
-            logToFile("daemon crashed \(maxRelaunches) times in a row, giving up")
+            gaveUp = true
+            logToFile("daemon failed \(maxRelaunches) times in a row, giving up")
+            failAllRequests(.daemonUnavailable)
             DispatchQueue.main.async { [weak self] in
-                self?.onError?("语音引擎多次崩溃，已停止重试。请检查模型路径后重启 Sotto。")
+                self?.onError?("语音引擎多次启动失败，已停止重试。请检查模型和 Python 路径后重启 Sotto。")
             }
             return
         }
@@ -346,6 +350,16 @@ final class SpeechEngine {
         daemonQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.process == nil else { return }
             self.launchDaemon()
+        }
+    }
+
+    /// Must run on `daemonQueue`.
+    private func failAllRequests(_ error: EngineError) {
+        queuedLines.removeAll()
+        let failing = pending
+        pending.removeAll()
+        for (_, cb) in failing {
+            cb(.failure(error))
         }
     }
 
@@ -364,6 +378,7 @@ final class SpeechEngine {
             case "ready":
                 isReady = true
                 relaunchAttempts = 0
+                gaveUp = false
                 logToFile("daemon ready")
                 let queued = queuedLines
                 queuedLines.removeAll()
@@ -395,6 +410,10 @@ final class SpeechEngine {
     ) {
         daemonQueue.async { [weak self] in
             guard let self else { return }
+            guard !self.gaveUp else {
+                completion(.failure(EngineError.daemonUnavailable))
+                return
+            }
             let id = self.nextID
             self.nextID += 1
             self.pending[id] = completion
