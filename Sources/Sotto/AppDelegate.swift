@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let keyMonitor = KeyMonitor()
     private let speechEngine = SpeechEngine()
     private let textInjector = TextInjector()
+    private let muteGuard = SystemMuteGuard()
     private lazy var overlayPanel = OverlayPanel()
 
     private var isEnabled = true
@@ -17,16 +18,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// What the current capture session's result is for: typing the polished
     /// transcript, typing a translation, or answering a spoken question.
     private enum CaptureMode { case dictation, translate, qa }
+    private struct FinishContext {
+        let mode: CaptureMode
+        let frontApp: String?
+        let selection: SelectionSnapshot?
+    }
     private var captureMode: CaptureMode = .dictation
     /// Name of the app being dictated into, captured when recording starts
     /// (the overlay is non-activating, so it's still frontmost then).
     private var captureFrontApp: String?
-    /// Mode/front-app snapshot taken in `stopAndFinish`. The transcript arrives
-    /// asynchronously, and a new capture may start (and overwrite `captureMode`)
-    /// before it does — routing the finished session by the live mode would
-    /// e.g. commit a QA question as dictation.
-    private var finishMode: CaptureMode = .dictation
-    private var finishFrontApp: String?
+    /// Optional selection captured at the exact moment a QA session starts.
+    /// It is revalidated before any replacement after the network round-trip.
+    private var captureSelection: SelectionSnapshot?
+    /// ASR results may complete after a second recording has already begun.
+    /// Route each result by its unique WAV instead of a shared mutable mode.
+    private var pendingFinishContexts: [String: FinishContext] = [:]
     private lazy var qaPanel = QAPanel()
 
     private lazy var settingsWindow = SettingsWindow()
@@ -39,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let code = selectedLocaleCode
+        speechEngine.automaticallyDetectsLanguage = code.isEmpty
         speechEngine.locale = code.isEmpty ? .current : Locale(identifier: code)
 
         // Touch the store eagerly so its one-time data-dir migration
@@ -66,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keyMonitor.onTranslateUp = { [weak self] in self?.handleTranslateUp() }
         keyMonitor.onQADown = { [weak self] in self?.handleQADown() }
         keyMonitor.onQAUp = { [weak self] in self?.handleQAUp() }
+        keyMonitor.onEditLastDown = { [weak self] in self?.editLastRecord() }
         if !keyMonitor.start() {
             showAccessibilityAlert()
         }
@@ -85,7 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func reloadFromSettings() {
         keyMonitor.reload()
         let code = selectedLocaleCode
+        speechEngine.automaticallyDetectsLanguage = code.isEmpty
         speechEngine.locale = code.isEmpty ? .current : Locale(identifier: code)
+        speechEngine.applyBackendSelection()
     }
 
     // MARK: - Trigger handling
@@ -177,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if recState == .locked { stopAndFinish() }
             } else if captureMode == .dictation {
                 captureMode = .qa
+                captureSelection = AppSettings.selectionAssistantEnabled ? SelectionContext.capture() : nil
                 applyOverlayAccent(for: .qa)
                 overlayPanel.updateText(listeningText(for: .qa))
             }
@@ -207,28 +218,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         captureMode = mode
         translateChordInitiated = false
         captureFrontApp = NSWorkspace.shared.frontmostApplication?.localizedName
+        captureSelection = mode == .qa && AppSettings.selectionAssistantEnabled
+            ? SelectionContext.capture() : nil
         updateStatusIcon(recording: true)
         applyOverlayAccent(for: mode)
         overlayPanel.show(text: listeningText(for: mode))
-        NSSound(named: .init("Tink"))?.play()
+        SoundFX.playPress()
         speechEngine.startRecording()
+        // Mute the speakers while the mic is open — but only after the press
+        // tick has had time to sound (it plays through the same output).
+        if AppSettings.muteWhileRecording {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard let self, self.recState != .idle else { return }
+                self.muteGuard.mute()
+            }
+        }
     }
 
     private func listeningText(for mode: CaptureMode) -> String {
         switch mode {
         case .dictation: return "正在聆听…"
         case .translate: return "正在聆听 · 翻译 → \(LLMRefiner.shared.translateTargetLanguage)"
-        case .qa: return "正在聆听 · 问答"
+        case .qa:
+            return captureSelection == nil ? "正在聆听 · 问答" : "正在聆听 · 选区助手"
         }
     }
 
-    /// Waveform accent per capture mode: blue = dictation, green = translate,
-    /// pink = QA — the color tells the mode at a glance.
+    /// Light style per capture mode: spectral rainbow = dictation, green =
+    /// translate, pink = QA — the color tells the mode at a glance.
     private func applyOverlayAccent(for mode: CaptureMode) {
         switch mode {
-        case .dictation: overlayPanel.setListeningAccent(SottoTheme.State.listening)
-        case .translate: overlayPanel.setListeningAccent(SottoTheme.State.listeningTranslate)
-        case .qa: overlayPanel.setListeningAccent(SottoTheme.State.listeningQA)
+        case .dictation: overlayPanel.setCaptureStyle(.dictation)
+        case .translate: overlayPanel.setCaptureStyle(.translate)
+        case .qa: overlayPanel.setCaptureStyle(.qa)
         }
     }
 
@@ -236,10 +258,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard recState != .idle else { return }
         recState = .idle
         holdStart = nil
-        finishMode = captureMode
-        finishFrontApp = captureFrontApp
+        let context = FinishContext(
+            mode: captureMode, frontApp: captureFrontApp, selection: captureSelection)
+        captureSelection = nil
         updateStatusIcon(recording: false)
-        speechEngine.stopRecording()   // → onFinalResultFull
+        // Restore output before the release cue. Otherwise the paired feedback
+        // sound is inaudible and the user's Mac can remain muted.
+        muteGuard.unmute()
+        SoundFX.playRelease()
+        guard let audioURL = speechEngine.stopRecording() else {
+            dismissWithNotice("录音未能完成")
+            return
+        }
+        pendingFinishContexts[audioURL.standardizedFileURL.path] = context
         overlayPanel.showTranscribing()
     }
 
@@ -247,13 +278,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupSpeechCallbacks() {
         speechEngine.onFinalResultFull = { [weak self] raw, audioURL, duration in
-            self?.handleFinal(raw: raw, audioURL: audioURL, duration: duration)
+            guard let self, let audioURL else { return }
+            let key = audioURL.standardizedFileURL.path
+            guard let context = self.pendingFinishContexts.removeValue(forKey: key) else {
+                try? FileManager.default.removeItem(at: audioURL)
+                SottoLog.log("AppDelegate", "discarded ASR result with no finish context")
+                return
+            }
+            self.handleFinal(raw: raw, audioURL: audioURL, duration: duration, context: context)
         }
 
         speechEngine.onError = { [weak self] msg in
             guard let self else { return }
             self.recState = .idle
-            self.overlayPanel.updateText("出错：\(msg)")
+            self.muteGuard.unmute()
+            self.overlayPanel.showError("出错：\(msg)")
             self.overlayPanel.dismiss(after: 1.5)
         }
 
@@ -262,7 +301,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func handleFinal(raw: String, audioURL: URL?, duration: TimeInterval) {
+    private func handleFinal(raw: String, audioURL: URL?, duration: TimeInterval,
+                             context: FinishContext) {
         let rawText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawText.isEmpty else {
             if let u = audioURL { try? FileManager.default.removeItem(at: u) }
@@ -270,18 +310,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        switch finishMode {
-        case .dictation: finishDictation(rawText: rawText, audioURL: audioURL, duration: duration)
-        case .translate: finishTranslate(rawText: rawText, audioURL: audioURL, duration: duration)
-        case .qa: finishQA(rawText: rawText, audioURL: audioURL)
+        switch context.mode {
+        case .dictation:
+            finishDictation(rawText: rawText, audioURL: audioURL, duration: duration,
+                            frontApp: context.frontApp)
+        case .translate:
+            finishTranslate(rawText: rawText, audioURL: audioURL, duration: duration,
+                            frontApp: context.frontApp)
+        case .qa:
+            finishQA(rawText: rawText, audioURL: audioURL,
+                     selection: context.selection, frontApp: context.frontApp)
         }
     }
 
-    private func finishDictation(rawText: String, audioURL: URL?, duration: TimeInterval) {
+    private func finishDictation(rawText: String, audioURL: URL?, duration: TimeInterval,
+                                 frontApp: String?) {
         let refiner = LLMRefiner.shared
         if refiner.isEnabled && refiner.isConfigured {
             overlayPanel.showRefining()
-            refiner.refine(rawText, frontApp: finishFrontApp) { [weak self] result in
+            refiner.refine(rawText, frontApp: frontApp) { [weak self] result in
                 guard let self else { return }
                 let refined: String
                 switch result {
@@ -304,7 +351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func finishTranslate(rawText: String, audioURL: URL?, duration: TimeInterval) {
+    private func finishTranslate(rawText: String, audioURL: URL?, duration: TimeInterval,
+                                 frontApp: String?) {
         let refiner = LLMRefiner.shared
         guard refiner.isConfigured else {
             if let u = audioURL { try? FileManager.default.removeItem(at: u) }
@@ -312,7 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         overlayPanel.showRefining("翻译中…")
-        refiner.translate(rawText, frontApp: finishFrontApp) { [weak self] result in
+        refiner.translate(rawText, frontApp: frontApp) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let translated) where !translated.isEmpty:
@@ -329,7 +377,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func finishQA(rawText: String, audioURL: URL?) {
+    private func finishQA(rawText: String, audioURL: URL?, selection: SelectionSnapshot?,
+                          frontApp: String?) {
         // QA never touches the target document or history — the answer only
         // lives in the floating panel.
         if let u = audioURL { try? FileManager.default.removeItem(at: u) }
@@ -338,10 +387,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dismissWithNotice("问答需要先在设置中配置大模型")
             return
         }
+        if let selection {
+            finishSelectionCommand(rawText, selection: selection, refiner: refiner,
+                                   fallbackFrontApp: frontApp)
+            return
+        }
         // A question asked while the panel is still open continues the
         // conversation with context; a question asked after it was dismissed
-        // (Esc/✕ → not visible) starts a fresh session.
-        if !qaPanel.isVisible { refiner.resetQAConversation() }
+        // (Esc/✕ → not visible) starts a fresh session with an empty transcript.
+        if !qaPanel.isVisible {
+            refiner.resetQAConversation()
+            qaPanel.clearTranscript()
+        }
         overlayPanel.showRefining("思考中…")
         refiner.answer(rawText) { [weak self] result in
             guard let self else { return }
@@ -353,6 +410,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 break
             default:
                 self.dismissWithNotice("回答失败")
+            }
+        }
+    }
+
+    private func finishSelectionCommand(
+        _ command: String, selection: SelectionSnapshot, refiner: LLMRefiner,
+        fallbackFrontApp: String?
+    ) {
+        switch SelectionContext.intent(for: command) {
+        case .rewrite:
+            overlayPanel.showRefining("正在改写选中文字…")
+            refiner.rewriteSelection(
+                selectedText: selection.text,
+                command: command,
+                frontApp: selection.appName ?? fallbackFrontApp
+            ) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let replacement) where !replacement.isEmpty:
+                    if selection.replace(with: replacement) {
+                        self.overlayPanel.showResult(replacement)
+                        NSSound(named: .init("Pop"))?.play()
+                        self.overlayPanel.dismiss()
+                    } else {
+                        self.overlayPanel.dismiss()
+                        self.qaPanel.present(
+                            question: "选区已变化，未自动替换",
+                            answer: replacement
+                        )
+                    }
+                case .failure(LLMRefiner.RefinerError.cancelled):
+                    break
+                default:
+                    self.dismissWithNotice("选区改写失败")
+                }
+            }
+        case .ask:
+            overlayPanel.showRefining("正在阅读选中文字…")
+            refiner.askSelection(
+                selectedText: selection.text,
+                question: command,
+                frontApp: selection.appName ?? fallbackFrontApp
+            ) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let answer) where !answer.isEmpty:
+                    self.overlayPanel.dismiss()
+                    self.qaPanel.present(question: command, answer: answer)
+                case .failure(LLMRefiner.RefinerError.cancelled):
+                    break
+                default:
+                    self.dismissWithNotice("选区问答失败")
+                }
             }
         }
     }
@@ -369,8 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if AppSettings.saveHistory {
-            RecordStore.shared.add(rawText: raw, refinedText: refined,
-                                   duration: duration, tempAudioURL: audioURL)
+            RecordStore.shared.add(rawText: raw, refinedText: refined, duration: duration)
         }
         if let u = audioURL { try? FileManager.default.removeItem(at: u) }
 
@@ -391,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// so "nothing to type" still reads as "Sotto heard you," not "Sotto froze."
     private func dismissWithNotice(_ text: String) {
         overlayPanel.showCancelled(text)
-        overlayPanel.dismiss(after: 0.8)
+        overlayPanel.dismiss(after: 0.45)
     }
 
     // MARK: - Status bar
@@ -441,12 +550,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func mainWindowIfNeeded() -> NSWindow {
         if let existing = dashboardWindow { return existing }
         dashboardWindowVC.onOpenSettings = { [weak self] in self?.openSettings() }
-        let win = NSWindow(contentViewController: dashboardWindowVC)
-        win.styleMask = [.titled, .closable, .miniaturizable]
+        let visible = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 800)
+        // Start close to the screen's usable size so the overview's lower
+        // cards are visible without immediately having to resize or scroll.
+        let defaultSize = NSSize(
+            width: min(1280, max(860, visible.width - 24)),
+            height: min(900, max(560, visible.height - 24)))
+        let style: NSWindow.StyleMask = [
+            .titled, .closable, .fullSizeContentView,
+        ]
+        // Create the window with its final style mask. Mutating the convenience
+        // `contentViewController` window afterwards can leave its native frame
+        // hit-testing region in the original configuration on some macOS builds.
+        let win = NSWindow(
+            contentRect: NSRect(origin: .zero, size: defaultSize),
+            styleMask: style, backing: .buffered, defer: false)
+        win.contentViewController = dashboardWindowVC
+        // openless-style chrome: the content is the window — no title bar band,
+        // no divider under it; the traffic lights float over the sidebar.
         win.title = "Sotto"
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
+        // Let AppKit own the border/corner mouse regions. Whole-background
+        // dragging can steal those events in a full-size-content window.
+        win.isMovableByWindowBackground = false
+        win.backgroundColor = SottoTheme.workspaceBackground
+        win.contentMinSize = NSSize(width: 860, height: 560)
         win.isReleasedWhenClosed = false
         win.appearance = NSAppearance(named: .darkAqua)
-        win.center()
+        win.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        win.standardWindowButton(.zoomButton)?.isEnabled = true
+        // Bump the key so an older, smaller saved frame does not override the
+        // new default on the first launch after this layout update.
+        let frameName = "SottoMainWindow.v4"
+        if !win.setFrameUsingName(frameName) {
+            win.setContentSize(defaultSize)
+            win.center()
+        }
+        win.setFrameAutosaveName(frameName)
+        SottoLog.log(
+            "MainWindow",
+            "created resizable=\(win.styleMask.contains(.resizable)) frame=\(NSStringFromRect(win.frame))")
         dashboardWindow = win
         return win
     }
@@ -465,6 +609,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.orderOut(nil)
         } else {
             showMainWindow()
+        }
+    }
+
+    /// Global-hotkey entry point: pop the correction editor for the most recent
+    /// dictation, so a bad result can be fixed without opening the dashboard
+    /// and hunting for the record. Saving feeds the same personalization flow
+    /// as editing from history.
+    private func editLastRecord() {
+        guard recState == .idle else { return }
+        guard let record = RecordStore.shared.recent(limit: 1).first else {
+            NSSound(named: .init("Funk"))?.play()
+            return
+        }
+        RecordEditorWindowController.present(for: record) { [weak self] corrected in
+            RecordStore.shared.setCorrection(id: record.id, correctedText: corrected)
+            guard let self, let win = self.dashboardWindow, win.isVisible else { return }
+            self.dashboardWindowVC.refresh()
         }
     }
 
@@ -535,6 +696,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        // Quick ASR backend switch, mirroring 设置 → 语音模型 → 识别引擎.
+        let backend = AppSettings.asrBackend
+        let localItem = NSMenuItem(title: "识别引擎：本地模型",
+                                   action: #selector(useLocalASR), keyEquivalent: "")
+        localItem.target = self
+        localItem.state = backend == .local ? .on : .off
+        menu.addItem(localItem)
+
+        let remoteItem = NSMenuItem(title: "识别引擎：在线接口",
+                                    action: #selector(useRemoteASR), keyEquivalent: "")
+        remoteItem.target = self
+        remoteItem.state = backend == .openAI ? .on : .off
+        menu.addItem(remoteItem)
+
+        menu.addItem(.separator())
+
         let dashItem = NSMenuItem(title: "仪表盘…", action: #selector(openDashboardFromMenu), keyEquivalent: "")
         dashItem.target = self
         menu.addItem(dashItem)
@@ -557,6 +734,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openDashboardFromMenu() { showMainWindow() }
 
+    // Backend is re-read per utterance, so flipping the config is all it takes;
+    // refresh keeps the dashboard's ASR badge in sync if it's open.
+    @objc private func useLocalASR() {
+        AppSettings.asrBackend = .local
+        speechEngine.applyBackendSelection()
+        dashboardWindowVC.refresh()
+    }
+
+    @objc private func useRemoteASR() {
+        AppSettings.asrBackend = .openAI
+        speechEngine.applyBackendSelection()
+        dashboardWindowVC.refresh()
+    }
+
     // MARK: - Actions
 
     @objc private func toggleEnabled() {
@@ -567,6 +758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyMonitor.stop()
             if recState != .idle {
                 speechEngine.cancel()
+                muteGuard.unmute()
                 overlayPanel.dismiss()
                 recState = .idle
                 holdStart = nil

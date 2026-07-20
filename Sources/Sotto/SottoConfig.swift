@@ -164,7 +164,10 @@ enum SottoConfig {
     private static func migrate(from d: UserDefaults) -> [String: Any] {
         var seed: [String: Any] = [:]
         let boolKeys = ["holdEnabled", "toggleEnabled", "dashboardEnabled",
-                        "smartTapToLock", "saveHistory", "saveAudio", "llmEnabled"]
+                        "smartTapToLock", "saveHistory", "saveAudio", "llmEnabled",
+                        "personalizationEnabled", "appAwareToneEnabled",
+                        "selectionAssistantEnabled", "autoLearnDictionary",
+                        "whisperModeEnabled"]
         let stringKeys = ["asrPythonPath", "asrModelPath", "selectedLocaleCode",
                           "llmAPIBaseURL", "llmAPIKey", "llmModel"]
         let doubleKeys = ["tapThreshold"]
@@ -193,6 +196,11 @@ enum SottoConfig {
             "tapThreshold": 0.4,
             "saveHistory": true,
             "saveAudio": true,
+            "personalizationEnabled": true,
+            "appAwareToneEnabled": true,
+            "selectionAssistantEnabled": true,
+            "autoLearnDictionary": true,
+            "whisperModeEnabled": false,
             // Opt-in: when true, transcripts and LLM responses are written to
             // ~/Library/Logs/Sotto.log for debugging. Off by default (privacy).
             "debugLogging": false,

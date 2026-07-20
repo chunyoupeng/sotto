@@ -79,6 +79,23 @@ enum AppSettings {
         set { SottoConfig.set(newValue, forKey: "qaEnabled") }
     }
 
+    /// Global hotkey that reopens the most recent dictation in the correction
+    /// editor, so a bad result can be fixed without hunting through the
+    /// dashboard. Default: ⌃⌘E.
+    static var editLastHotkey: Hotkey {
+        get {
+            SottoConfig.codable("editLastHotkey", as: Hotkey.self)
+                ?? Hotkey(keyCode: 14,  // E
+                          modifiers: CGEventFlags.maskControl.rawValue | CGEventFlags.maskCommand.rawValue)
+        }
+        set { SottoConfig.setCodable(newValue, forKey: "editLastHotkey") }
+    }
+
+    static var editLastEnabled: Bool {
+        get { SottoConfig.bool("editLastEnabled") ?? true }
+        set { SottoConfig.set(newValue, forKey: "editLastEnabled") }
+    }
+
     /// When holding the hold-key, a quick tap (< `tapThreshold`) locks recording
     /// so it continues until the key is tapped again (Doubao-style). A real hold
     /// stops on release (push-to-talk).
@@ -99,20 +116,83 @@ enum AppSettings {
         set { SottoConfig.set(newValue, forKey: "saveHistory") }
     }
 
-    static var saveAudio: Bool {
-        get { SottoConfig.bool("saveAudio") ?? true }
-        set { SottoConfig.set(newValue, forKey: "saveAudio") }
+    // MARK: - Intelligent writing
+
+    /// Feed a compact, locally learned style profile into refine requests.
+    static var personalizationEnabled: Bool {
+        get { SottoConfig.bool("personalizationEnabled") ?? true }
+        set { SottoConfig.set(newValue, forKey: "personalizationEnabled") }
+    }
+
+    /// Derive a conservative tone instruction from the frontmost application.
+    static var appAwareToneEnabled: Bool {
+        get { SottoConfig.bool("appAwareToneEnabled") ?? true }
+        set { SottoConfig.set(newValue, forKey: "appAwareToneEnabled") }
+    }
+
+    /// Let the QA hotkey use selected text as rewrite/question context.
+    static var selectionAssistantEnabled: Bool {
+        get { SottoConfig.bool("selectionAssistantEnabled") ?? true }
+        set { SottoConfig.set(newValue, forKey: "selectionAssistantEnabled") }
+    }
+
+    /// Save conservative correction diffs as pending dictionary suggestions.
+    static var autoLearnDictionary: Bool {
+        get { SottoConfig.bool("autoLearnDictionary") ?? true }
+        set { SottoConfig.set(newValue, forKey: "autoLearnDictionary") }
+    }
+
+    /// Apply extra input gain before writing the WAV for quiet/whispered speech.
+    static var whisperModeEnabled: Bool {
+        get { SottoConfig.bool("whisperModeEnabled") ?? false }
+        set { SottoConfig.set(newValue, forKey: "whisperModeEnabled") }
+    }
+
+    /// Mute the system output device while the mic is recording (restored on
+    /// stop), so background music/video never bleeds into the dictation.
+    static var muteWhileRecording: Bool {
+        get { SottoConfig.bool("muteWhileRecording") ?? true }
+        set { SottoConfig.set(newValue, forKey: "muteWhileRecording") }
     }
 
     // MARK: - Recognition language
 
-    /// Empty = follow the system locale.
+    /// Empty = let the multilingual ASR model detect the spoken language.
     static var localeCode: String {
         get { SottoConfig.string("selectedLocaleCode") ?? "zh-CN" }
         set { SottoConfig.set(newValue, forKey: "selectedLocaleCode") }
     }
 
     // MARK: - ASR engine
+
+    /// Recognition backend: local MLX sidecar or a remote OpenAI-compatible
+    /// `/audio/transcriptions` endpoint.
+    enum ASRBackend: String {
+        case local
+        case openAI = "openai"
+    }
+
+    static var asrBackend: ASRBackend {
+        get { SottoConfig.string("asrBackend").flatMap(ASRBackend.init(rawValue:)) ?? .local }
+        set { SottoConfig.set(newValue.rawValue, forKey: "asrBackend") }
+    }
+
+    /// Base URL of the OpenAI-compatible ASR service (e.g. https://api.openai.com/v1).
+    static var asrAPIBaseURL: String {
+        get { SottoConfig.string("asrAPIBaseURL") ?? "" }
+        set { SottoConfig.set(newValue, forKey: "asrAPIBaseURL") }
+    }
+
+    static var asrAPIKey: String {
+        get { SottoConfig.string("asrAPIKey") ?? "" }
+        set { SottoConfig.set(newValue, forKey: "asrAPIKey") }
+    }
+
+    /// Model name sent to the remote endpoint (e.g. whisper-1).
+    static var asrAPIModel: String {
+        get { SottoConfig.string("asrAPIModel") ?? "" }
+        set { SottoConfig.set(newValue, forKey: "asrAPIModel") }
+    }
 
     /// Empty = auto (use the bundled frozen engine; only needed for dev override).
     static var asrPythonPath: String {

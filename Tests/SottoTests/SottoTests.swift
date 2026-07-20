@@ -1,6 +1,18 @@
 import XCTest
 @testable import Sotto
 
+final class TextInjectorTests: XCTestCase {
+    func testSingleLineUsesUnicodeEvents() {
+        XCTAssertFalse(TextInjector.requiresPaste("今天想吃水果了：买苹果、买香蕉。"))
+    }
+
+    func testMultilineUsesPaste() {
+        XCTAssertTrue(TextInjector.requiresPaste("今天想吃水果了：\n1. 买苹果；\n2. 买香蕉。"))
+        XCTAssertTrue(TextInjector.requiresPaste("第一行\r\n第二行"))
+        XCTAssertTrue(TextInjector.requiresPaste("第一行\u{2028}第二行"))
+    }
+}
+
 final class HotkeyTests: XCTestCase {
     func testFnHotkey() {
         XCTAssertTrue(Hotkey.fn.isFn)
@@ -55,13 +67,23 @@ final class ChatResponseParsingTests: XCTestCase {
     func testDefaultPromptIsNeverEmpty() {
         XCTAssertFalse(LLMRefiner.defaultSystemPrompt.isEmpty)
     }
+
+    func testDefaultPromptUsesIntentFirstEditing() {
+        let prompt = LLMRefiner.defaultSystemPrompt
+        let loadedPreview = String(prompt.prefix(120))
+        XCTAssertTrue(prompt.contains("智能语音写作编辑器"), loadedPreview)
+        XCTAssertTrue(prompt.contains("按意思重组，不按说话顺序照抄"), loadedPreview)
+        XCTAssertTrue(prompt.contains("编辑旁白"), loadedPreview)
+        XCTAssertFalse(prompt.contains("±20%"))
+        XCTAssertFalse(prompt.contains("润色，不是重写"))
+    }
 }
 
 final class DictationRecordTests: XCTestCase {
     private func record(raw: String, refined: String, corrected: String? = nil,
                         duration: Double = 6.0) -> DictationRecord {
         DictationRecord(id: "t", date: Date(), durationSeconds: duration,
-                        rawText: raw, refinedText: refined, audioFileName: nil,
+                        rawText: raw, refinedText: refined,
                         correctedText: corrected)
     }
 
@@ -108,15 +130,15 @@ final class RecordStoreTests: XCTestCase {
 
     func testAddAndRecentOrdering() {
         let store = RecordStore(baseDir: dir)
-        store.add(rawText: "第一条", refinedText: "第一条", duration: 1, tempAudioURL: nil)
-        store.add(rawText: "第二条", refinedText: "第二条", duration: 2, tempAudioURL: nil)
+        store.add(rawText: "第一条", refinedText: "第一条", duration: 1)
+        store.add(rawText: "第二条", refinedText: "第二条", duration: 2)
         XCTAssertEqual(store.totalCount, 2)
         XCTAssertEqual(store.recent().first?.rawText, "第二条")
     }
 
     func testPersistenceRoundtrip() {
         let store = RecordStore(baseDir: dir)
-        store.add(rawText: "raw", refinedText: "refined", duration: 3, tempAudioURL: nil)
+        store.add(rawText: "raw", refinedText: "refined", duration: 3)
         let json = dir.appendingPathComponent("history.json")
         XCTAssertTrue(waitUntil { FileManager.default.fileExists(atPath: json.path) })
 
@@ -135,23 +157,24 @@ final class RecordStoreTests: XCTestCase {
             atPath: dir.appendingPathComponent("history.corrupt.json").path))
     }
 
-    func testSetCorrectionAndTrainingExport() throws {
+    func testSetCorrection() throws {
         let store = RecordStore(baseDir: dir)
-        store.add(rawText: "派森", refinedText: "派森", duration: 1, tempAudioURL: nil)
+        store.add(rawText: "派森", refinedText: "派森", duration: 1)
         let id = store.recent().first!.id
 
         store.setCorrection(id: id, correctedText: "Python")
-        XCTAssertEqual(store.correctedCount, 1)
+        XCTAssertEqual(store.recent().first?.isCorrected, true)
         XCTAssertEqual(store.recent().first?.displayText, "Python")
 
-        let out = dir.appendingPathComponent("train.jsonl")
-        XCTAssertEqual(try store.exportTrainingData(to: out), 1)
-        let line = try String(contentsOf: out, encoding: .utf8)
-        XCTAssertTrue(line.contains("\"raw\""))
-        XCTAssertTrue(line.contains("Python"))
+        // Restoring the pre-edit result should remove the manual-correction
+        // state instead of retaining a redundant correction.
+        store.setCorrection(id: id, correctedText: "派森")
+        XCTAssertEqual(store.recent().first?.isCorrected, false)
+
+        store.setCorrection(id: id, correctedText: "Python")
 
         // Whitespace-only correction clears it.
         store.setCorrection(id: id, correctedText: "   ")
-        XCTAssertEqual(store.correctedCount, 0)
+        XCTAssertEqual(store.recent().first?.isCorrected, false)
     }
 }

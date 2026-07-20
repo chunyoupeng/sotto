@@ -18,45 +18,101 @@ if CommandLine.arguments.contains("--repair-sotto") {
 // normal runs (no entry point reachable from the shipped app).
 if CommandLine.arguments.contains("--preview-overlay") {
     let panel = OverlayPanel()
-    panel.show(text: "正在聆听…")
+    var up = true
+    var lvl: Float = 0.1
+    Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+        panel.updateAudioLevel(lvl)
+        if up { lvl += 0.05 } else { lvl -= 0.05 }
+        if lvl >= 0.9 { up = false }
+        if lvl <= 0.05 { up = true }
+    }
+    // Loop the full session choreography: listening wave → orb thinking →
+    // merge + scale-out, so every phase can be eyeballed / screenshotted.
+    var step = 0
+    func advance() {
+        switch step % 4 {
+        case 0: panel.show(text: "正在聆听…")
+        case 1: panel.showTranscribing()
+        case 2: panel.showRefining()
+        default: panel.showResult("你好，这是一次测试。"); panel.dismiss(after: 0.8)
+        }
+        step += 1
+        let delay: TimeInterval = step % 4 == 0 ? 2.2 : 3.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { advance() }
+    }
+    advance()
+    app.run()
+}
+
+// Debug-only: `--preview-ui` opens every surface (settings, dashboard, QA
+// panel, overlay) at fixed positions and prints screencapture-ready regions
+// ("REGION <name> <x> <y> <w> <h>", top-left origin), then idles for
+// screenshots. Not reachable from normal runs.
+if CommandLine.arguments.contains("--preview-ui") {
+    setbuf(stdout, nil)  // REGION lines must reach a redirected pipe immediately
+    app.setActivationPolicy(.accessory)
+    let screen = NSScreen.main!
+    let screenH = screen.frame.height
+
+    func printRegion(_ name: String, _ f: NSRect) {
+        let pad: CGFloat = 24
+        let x = max(f.origin.x - pad, 0)
+        let y = max(screenH - (f.origin.y + f.height) - pad, 0)
+        print("REGION \(name) \(Int(x)) \(Int(y)) \(Int(f.width + pad * 2)) \(Int(f.height + pad * 2))")
+    }
+
+    let settings = SettingsWindow()
+    settings.hidesOnDeactivate = false  // preview app is never "active"
+    if let tab = ProcessInfo.processInfo.environment["SOTTO_PREVIEW_TAB"].flatMap(Int.init) {
+        settings.selectTab(tab)
+    }
+    settings.setFrameOrigin(NSPoint(x: 60, y: screenH - 760 - 120))
+    settings.orderFrontRegardless()
+    printRegion("settings", settings.frame)
+
+    let dashVC = DashboardViewController()
+    let dashWin = NSWindow(contentViewController: dashVC)
+    dashWin.styleMask = [.titled]
+    dashWin.title = "Sotto"
+    dashWin.appearance = NSAppearance(named: .darkAqua)
+    dashVC.refresh()
+    dashWin.setFrameOrigin(NSPoint(x: 760, y: screenH - 620 - 120))
+    dashWin.orderFrontRegardless()
+    printRegion("dashboard", dashWin.frame)
+
+    let qa = QAPanel()
+    qa.present(question: "苹果的流体界面设计核心原则是什么？",
+               answer: "核心是四点：即时响应（按下瞬间就有反馈）、直接操纵（内容 1:1 跟随手势）、可中断（动画随时可以被抓住并反向）、以及动量传递（松手后动画继承手势的速度）。弹簧动画天然满足这些要求，因此成为默认工具。")
+    qa.setFrameOrigin(NSPoint(x: 1240, y: screenH - 420 - 180))
+    printRegion("qa", qa.frame)
+
+    let editorRecord = DictationRecord(
+        id: "preview", date: Date(), durationSeconds: 2.1,
+        rawText: "因为出图后再改善都已重做了。",
+        refinedText: "因为出图后再改善，都已经重做了。")
+    RecordEditorWindowController.present(for: editorRecord) { _ in }
+    if let editorWin = NSApp.windows.first(where: { $0 is NSPanel && $0.frame.width == 520 }) {
+        editorWin.setFrameOrigin(NSPoint(x: 1240, y: screenH - 420 - 620))
+        printRegion("editor", editorWin.frame)
+    }
+
+    let overlay = OverlayPanel()
+    overlay.show(text: "正在聆听…")
     var up = true
     var lvl: Float = 0.1
     Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { _ in
-        panel.updateAudioLevel(lvl)
+        overlay.updateAudioLevel(lvl)
         if up { lvl += 0.08 } else { lvl -= 0.08 }
         if lvl >= 0.9 { up = false }
         if lvl <= 0.05 { up = true }
     }
-    app.run()
-}
-
-// Debug-only: `--render-wave` bakes the waveform (at a fixed level) to a PNG
-// for offscreen visual checks — no screen-recording permission needed.
-if CommandLine.arguments.contains("--render-wave") {
-    let v = WaveformView(frame: NSRect(x: 0, y: 0, width: 160, height: 64))
-    v.wantsLayer = true
-    let host = NSView(frame: v.bounds)
-    host.wantsLayer = true
-    host.layer?.backgroundColor = NSColor(white: 0.07, alpha: 1).cgColor
-    host.addSubview(v)
-    let win = NSWindow(contentRect: host.bounds, styleMask: .borderless,
-                       backing: .buffered, defer: false)
-    win.backgroundColor = NSColor(white: 0.07, alpha: 1)
-    win.contentView = host
-    win.makeKeyAndOrderFront(nil)
-    v.isAnimating = true
-    v.isListening = true
-    Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in v.setLevel(0.65) }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-        guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { exit(1) }
-        v.cacheDisplay(in: v.bounds, to: rep)
-        if let png = rep.representation(using: .png, properties: [:]) {
-            try? png.write(to: URL(fileURLWithPath: "/tmp/sotto_wave.png"))
-        }
-        exit(0)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+        printRegion("overlay", overlay.frame)
+        print("READY")
     }
     app.run()
 }
+
 
 let delegate = AppDelegate()
 app.delegate = delegate

@@ -1,13 +1,13 @@
 import Foundation
 
-/// One dictation event: the captured audio plus both transcription stages.
+/// One dictation event: both transcription stages. Audio is never persisted —
+/// the temp WAV only lives long enough to be transcribed.
 struct DictationRecord: Codable, Identifiable {
     let id: String
     let date: Date
     let durationSeconds: Double
     let rawText: String        // raw ASR output
     let refinedText: String    // after LLM refinement (== rawText if refine off/failed)
-    let audioFileName: String? // relative to the store's audio directory, nil if not saved
     /// User's manual correction, the ground truth for the data flywheel. nil
     /// until the user fixes the record. Optional so old history.json still decodes.
     var correctedText: String? = nil
@@ -41,9 +41,8 @@ struct DayStats {
     var charsPerMinute: Double { seconds > 0.1 ? Double(chars) / (seconds / 60.0) : 0 }
 }
 
-/// Persists dictation history as JSON plus the raw audio files, and computes
-/// the statistics shown in the dashboard. All file I/O happens under
-/// `~/Library/Application Support/Sotto/`.
+/// Persists dictation history as JSON and computes the statistics shown in the
+/// dashboard. All file I/O happens under `~/Library/Application Support/Sotto/`.
 final class RecordStore {
     static let shared = RecordStore()
 
@@ -54,16 +53,17 @@ final class RecordStore {
     private var records: [DictationRecord] = []
 
     let baseDir: URL
-    let audioDir: URL
+    /// Where saved audio used to live; only touched to clean up legacy files.
+    private let legacyAudioDir: URL
     private let jsonURL: URL
 
     /// Designated initializer, internal so tests can point a store at a temp dir.
     init(baseDir: URL) {
         let fm = FileManager.default
         self.baseDir = baseDir
-        audioDir = baseDir.appendingPathComponent("audio", isDirectory: true)
+        legacyAudioDir = baseDir.appendingPathComponent("audio", isDirectory: true)
         jsonURL = baseDir.appendingPathComponent("history.json")
-        try? fm.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: baseDir, withIntermediateDirectories: true)
         load()
     }
 
@@ -114,38 +114,13 @@ final class RecordStore {
         }
     }
 
-    /// Add a dictation. If `tempAudioURL` is given and audio saving is enabled,
-    /// the file is moved into the store; otherwise it is left untouched (caller
-    /// owns cleanup of temp files when audio is not saved).
-    func add(rawText: String, refinedText: String, duration: TimeInterval,
-             tempAudioURL: URL?) {
-        let id = UUID().uuidString
-        var savedName: String? = nil
-
-        if AppSettings.saveAudio, let src = tempAudioURL,
-           FileManager.default.fileExists(atPath: src.path) {
-            let name = "\(id).wav"
-            let dest = audioDir.appendingPathComponent(name)
-            do {
-                try FileManager.default.copyItem(at: src, to: dest)
-                savedName = name
-            } catch {
-                savedName = nil
-            }
-        }
-
+    /// Add a dictation (text only; the caller owns the temp WAV's cleanup).
+    func add(rawText: String, refinedText: String, duration: TimeInterval) {
         let record = DictationRecord(
-            id: id, date: Date(), durationSeconds: duration,
-            rawText: rawText, refinedText: refinedText, audioFileName: savedName)
-
+            id: UUID().uuidString, date: Date(), durationSeconds: duration,
+            rawText: rawText, refinedText: refinedText)
         queue.sync { records.append(record) }
         persistAsync()
-    }
-
-    func audioURL(for record: DictationRecord) -> URL? {
-        guard let name = record.audioFileName else { return nil }
-        let url = audioDir.appendingPathComponent(name)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     /// Most-recent-first.
@@ -154,53 +129,50 @@ final class RecordStore {
     }
 
     func clearAll() {
-        let removed = queue.sync { () -> [DictationRecord] in
-            defer { records.removeAll() }
-            return records
-        }
-        for r in removed {
-            if let url = audioURL(for: r) { try? FileManager.default.removeItem(at: url) }
-        }
+        queue.sync { records.removeAll() }
+        // Also drop any audio saved by older versions of the app.
+        try? FileManager.default.removeItem(at: legacyAudioDir)
+        persistAsync()
+    }
+
+    /// Delete a single record (history detail pane's 删除).
+    func remove(id: String) {
+        queue.sync { records.removeAll { $0.id == id } }
         persistAsync()
     }
 
     // MARK: - Editing (data flywheel)
 
     /// Store (or clear) the user's manual correction for a record. An empty or
-    /// whitespace-only string clears the correction.
+    /// whitespace-only string, or restoring the original refined result,
+    /// clears the correction.
     func setCorrection(id: String, correctedText: String?) {
+        var retractedPair: (before: String, after: String)?
+        var learningPair: (before: String, after: String)?
         queue.sync {
             guard let idx = records.firstIndex(where: { $0.id == id }) else { return }
             let clean = correctedText?.trimmingCharacters(in: .whitespacesAndNewlines)
-            records[idx].correctedText = (clean?.isEmpty == false) ? clean : nil
+            let oldCorrection = records[idx].correctedText?.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            let newCorrection = (clean?.isEmpty == false && clean != records[idx].refinedText)
+                ? clean : nil
+            guard oldCorrection != newCorrection else { return }
+
+            if let oldCorrection, !oldCorrection.isEmpty {
+                retractedPair = (records[idx].refinedText, oldCorrection)
+            }
+            if let newCorrection {
+                learningPair = (records[idx].refinedText, newCorrection)
+            }
+            records[idx].correctedText = newCorrection
+        }
+        if let pair = retractedPair {
+            PersonalizationStore.retractCorrection(before: pair.before, after: pair.after)
+        }
+        if let pair = learningPair {
+            PersonalizationStore.observeCorrection(before: pair.before, after: pair.after)
         }
         persistAsync()
-    }
-
-    /// Records the user has corrected — the training set.
-    var correctedCount: Int { snapshot().reduce(0) { $0 + ($1.isCorrected ? 1 : 0) } }
-
-    /// Export corrected records as JSON Lines suitable for ASR fine-tuning:
-    /// one object per line with the raw ASR output, the human-corrected target,
-    /// and the absolute audio path when available. Returns the number written.
-    @discardableResult
-    func exportTrainingData(to url: URL) throws -> Int {
-        let samples = snapshot()
-            .filter { $0.isCorrected }
-            .sorted { $0.date < $1.date }
-        var lines: [String] = []
-        for r in samples {
-            var obj: [String: Any] = ["raw": r.rawText, "text": r.correctedText ?? r.refinedText]
-            if let name = r.audioFileName {
-                obj["audio"] = audioDir.appendingPathComponent(name).path
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: obj),
-               let line = String(data: data, encoding: .utf8) {
-                lines.append(line)
-            }
-        }
-        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
-        return lines.count
     }
 
     // MARK: - Stats
@@ -230,6 +202,30 @@ final class RecordStore {
         return (0..<days).reversed().compactMap { offset in
             guard let d = cal.date(byAdding: .day, value: -offset, to: today) else { return nil }
             return Self.stats(forDay: d, in: snap)
+        }
+    }
+
+    /// Same rollup as `lastDays`, but bucketed in a single pass over the
+    /// records — used by the year heatmap, where 365 × `stats(forDay:)`
+    /// filter passes would be wasteful.
+    func dailyStats(lastDays days: Int) -> [DayStats] {
+        let snap = snapshot()
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        guard let start = cal.date(byAdding: .day, value: -(days - 1), to: today) else { return [] }
+        var buckets: [Date: (count: Int, chars: Int, secs: Double)] = [:]
+        for r in snap where r.date >= start {
+            let d = cal.startOfDay(for: r.date)
+            var b = buckets[d] ?? (0, 0, 0)
+            b.count += 1
+            b.chars += r.charCount
+            b.secs += r.durationSeconds
+            buckets[d] = b
+        }
+        return (0..<days).compactMap { offset in
+            guard let d = cal.date(byAdding: .day, value: offset, to: start) else { return nil }
+            let b = buckets[d] ?? (0, 0, 0)
+            return DayStats(day: d, count: b.count, chars: b.chars, seconds: b.secs)
         }
     }
 

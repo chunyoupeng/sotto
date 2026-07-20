@@ -18,6 +18,8 @@ final class KeyMonitor {
     /// QA key transitions (hold-style).
     var onQADown: (() -> Void)?
     var onQAUp: (() -> Void)?
+    /// Edit-last-record key pressed once.
+    var onEditLastDown: (() -> Void)?
 
     var holdHotkey: Hotkey? = .fn
     var holdEnabled = true
@@ -26,6 +28,7 @@ final class KeyMonitor {
     var dashboardHotkey: Hotkey? = nil
     var translateHotkey: Hotkey? = nil
     var qaHotkey: Hotkey? = nil
+    var editLastHotkey: Hotkey? = nil
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -36,6 +39,7 @@ final class KeyMonitor {
     private var dashboardActive = false
     private var translateActive = false
     private var qaActive = false
+    private var editLastActive = false
 
     /// Reconfigure from current `AppSettings`.
     func reload() {
@@ -46,6 +50,7 @@ final class KeyMonitor {
         dashboardHotkey = AppSettings.dashboardEnabled ? AppSettings.dashboardHotkey : nil
         translateHotkey = AppSettings.translateEnabled ? AppSettings.translateHotkey : nil
         qaHotkey = AppSettings.qaEnabled ? AppSettings.qaHotkey : nil
+        editLastHotkey = AppSettings.editLastEnabled ? AppSettings.editLastHotkey : nil
     }
 
     /// Start monitoring. Returns false if accessibility permission is missing.
@@ -94,6 +99,7 @@ final class KeyMonitor {
         dashboardActive = false
         translateActive = false
         qaActive = false
+        editLastActive = false
     }
 
     // MARK: - Event handling
@@ -211,6 +217,24 @@ final class KeyMonitor {
                         dashboardActive = false
                         if shouldSuppress(dk) { return nil }
                     } else if down && shouldSuppress(dk) && !dk.isModifierKey {
+                        return nil
+                    }
+                }
+            }
+        }
+
+        // --- Edit-last-record key ---
+        if let ek = editLastHotkey {
+            if let (down, matched) = match(ek, type: type, keyCode: keyCode, flags: flags) {
+                if matched {
+                    if down && !editLastActive && !chordFired {
+                        editLastActive = true
+                        DispatchQueue.main.async { [weak self] in self?.onEditLastDown?() }
+                        if shouldSuppress(ek) { return nil }
+                    } else if !down && editLastActive {
+                        editLastActive = false
+                        if shouldSuppress(ek) { return nil }
+                    } else if down && shouldSuppress(ek) && !ek.isModifierKey {
                         return nil
                     }
                 }

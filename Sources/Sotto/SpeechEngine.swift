@@ -5,12 +5,18 @@ private func logToFile(_ message: String) {
     SottoLog.log("SpeechEngine", message)
 }
 
-/// Speech recognition backed by a local MLX ASR model (Qwen3-ASR) running in a
-/// resident Python sidecar process. Audio is recorded natively, written to a
-/// temporary 16 kHz mono WAV, and handed to the daemon for transcription.
+/// Speech recognition. Audio is recorded natively and written to a temporary
+/// 16 kHz mono WAV, then transcribed by the configured backend:
 ///
-/// The daemon stays loaded in memory for the lifetime of the app so each
-/// utterance only pays inference cost (~0.5 s), not model load (~1 s).
+/// - `local`: an MLX ASR model (Qwen3-ASR) in a Python sidecar. It is launched
+///   lazily by the first local transcription and released when online ASR is
+///   selected.
+/// - `openai`: a remote OpenAI Whisper-compatible `/audio/transcriptions`
+///   endpoint (see `RemoteASRClient`). No local model or Python needed.
+///
+/// The backend is re-read per utterance, so switching in Settings takes effect
+/// immediately; the local daemon is only launched once a local transcription
+/// is actually needed.
 final class SpeechEngine {
     var onPartialResult: ((String) -> Void)?   // kept for API compatibility (no streaming in v1)
     var onFinalResult: ((String) -> Void)?
@@ -22,9 +28,19 @@ final class SpeechEngine {
     var onLocaleUnavailable: ((String) -> Void)?  // kept for API compatibility (unused)
 
     private var recordingStartTime: Date?
+    /// Loudest normalized level seen this recording (written on the audio tap
+    /// thread, read once after the tap is removed). Silence never reaching
+    /// `speechLevelThreshold` skips ASR entirely: with hotword biasing active,
+    /// a silent clip reliably hallucinates dictionary words ("Python" from
+    /// nothing), so an empty utterance must never leave the machine.
+    private var peakLevel: Float = 0
+    private static let speechLevelThreshold: Float = 0.15
 
     /// Selected locale; only the language part is forwarded to the model.
     var locale: Locale
+    /// When enabled, omit the language hint so Qwen3-ASR can detect it from
+    /// each utterance (including mixed-language speech).
+    var automaticallyDetectsLanguage = false
 
     // MARK: - Audio
 
@@ -50,10 +66,35 @@ final class SpeechEngine {
     /// Set once relaunching is abandoned; new requests then fail immediately
     /// instead of queuing for a daemon that will never come up.
     private var gaveUp = false
+    /// Whether `launchDaemon` has been requested (guarded by `daemonQueue`).
+    private var daemonStarted = false
+    /// False after online ASR is selected, preventing crash-retry timers from
+    /// resurrecting a local model the user no longer wants in memory.
+    private var wantsDaemon = false
 
     init(locale: Locale = Locale(identifier: "zh-CN")) {
         self.locale = locale
-        daemonQueue.async { [weak self] in self?.launchDaemon() }
+    }
+
+    /// Apply a settings/menu backend change immediately. Local ASR remains
+    /// lazy; online ASR tears down any previously loaded sidecar.
+    func applyBackendSelection() {
+        daemonQueue.async { [weak self] in
+            guard let self else { return }
+            if AppSettings.asrBackend == .openAI {
+                self.stopDaemon()
+            }
+        }
+    }
+
+    /// Must run on `daemonQueue`.
+    private func startDaemonIfNeeded() {
+        wantsDaemon = true
+        guard !daemonStarted else { return }
+        daemonStarted = true
+        gaveUp = false
+        relaunchAttempts = 0
+        launchDaemon()
     }
 
     // MARK: - Permissions
@@ -113,6 +154,7 @@ final class SpeechEngine {
         audioFile = file
         converter = conv
         currentRecordingURL = url
+        peakLevel = 0
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             self?.handleTap(buffer)
@@ -130,6 +172,12 @@ final class SpeechEngine {
 
     private func handleTap(_ buffer: AVAudioPCMBuffer) {
         guard let file = audioFile, let converter else { return }
+        // Meter before any gain so the level (UI + silence gate) reflects the
+        // real input, not whisper-mode's amplified signal.
+        meter(buffer)
+        if AppSettings.whisperModeEnabled {
+            applyWhisperGain(to: buffer)
+        }
         let outFormat = file.processingFormat
 
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
@@ -154,7 +202,10 @@ final class SpeechEngine {
             try? file.write(from: outBuffer)
         }
 
-        // Audio level metering from the original buffer.
+    }
+
+    /// RMS → normalized 0..1 level, feeding the UI and the silence gate.
+    private func meter(_ buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.floatChannelData?[0] else { return }
         let frameLength = Int(buffer.frameLength)
         var sum: Float = 0
@@ -164,17 +215,36 @@ final class SpeechEngine {
         let rms = sqrtf(sum / Float(max(frameLength, 1)))
         let dB = 20 * log10(max(rms, 1e-6))
         let normalized = max(Float(0), min(Float(1), (dB + 50) / 40))
+        peakLevel = max(peakLevel, normalized)
         DispatchQueue.main.async { [weak self] in
             self?.onAudioLevel?(normalized)
         }
     }
 
-    func stopRecording() {
+    /// Quiet-speech mode raises the signal before ASR conversion. A soft clip
+    /// keeps sudden normal-volume syllables from wrapping/distorting like a hard
+    /// integer gain would. This is intentionally local and deterministic.
+    private func applyWhisperGain(to buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        let gain: Float = 2.4
+        for channel in 0..<channelCount {
+            let samples = channels[channel]
+            for frame in 0..<frameCount {
+                let amplified = samples[frame] * gain
+                samples[frame] = amplified / (1 + abs(amplified))
+            }
+        }
+    }
+
+    @discardableResult
+    func stopRecording() -> URL? {
         if audioEngine.isRunning {
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
         }
-        guard let url = currentRecordingURL else { return }
+        guard let url = currentRecordingURL else { return nil }
         audioFile = nil  // flush & close the file
         converter = nil
         currentRecordingURL = nil
@@ -182,7 +252,21 @@ final class SpeechEngine {
         let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
         recordingStartTime = nil
 
-        let language = locale.language.languageCode?.identifier
+        // Silence gate: nothing loud enough to be speech was heard, so don't
+        // transcribe at all — report an empty utterance (the caller shows its
+        // "nothing heard" notice and cleans up the WAV).
+        if peakLevel < Self.speechLevelThreshold {
+            logToFile("silence gate: peak \(peakLevel) < \(Self.speechLevelThreshold), skipping ASR")
+            DispatchQueue.main.async { [weak self] in
+                self?.onFinalResultFull?("", url, duration)
+                self?.onFinalResult?("")
+            }
+            return url
+        }
+
+        let language = automaticallyDetectsLanguage
+            ? nil
+            : locale.language.languageCode?.identifier
         transcribe(audioURL: url, language: language) { [weak self] result in
             guard let self else { return }
             DispatchQueue.main.async {
@@ -197,6 +281,7 @@ final class SpeechEngine {
                 }
             }
         }
+        return url
     }
 
     func cancel() {
@@ -267,6 +352,7 @@ final class SpeechEngine {
 
     /// Must run on `daemonQueue`.
     private func launchDaemon() {
+        guard wantsDaemon else { return }
         // Launch failures retry with the same backoff as crashes: the engine or
         // Python may live on a volume that isn't mounted yet at login. Queued
         // requests are kept — their WAVs still exist — so they replay on success.
@@ -325,16 +411,36 @@ final class SpeechEngine {
         isReady = false
         stdinHandle = nil
         process = nil
+        daemonStarted = false
         // Fail everything in flight; also drop queued requests — their pending
         // callbacks are being failed here, so replaying the lines after a
         // relaunch would transcribe into the void (and the WAVs may be gone).
         failAllRequests(.daemonUnavailable)
-        scheduleRelaunch()
+        if wantsDaemon { scheduleRelaunch() }
+    }
+
+    /// Must run on `daemonQueue`. Explicit online selection is authoritative:
+    /// cancel pending local work, detach handlers, and release model memory.
+    private func stopDaemon() {
+        wantsDaemon = false
+        daemonStarted = false
+        isReady = false
+        gaveUp = false
+        relaunchAttempts = 0
+        stdoutBuffer.removeAll()
+        failAllRequests(.daemonUnavailable)
+        stdinHandle = nil
+        guard let proc = process else { return }
+        process = nil
+        proc.terminationHandler = nil
+        if proc.isRunning { proc.terminate() }
+        logToFile("local daemon stopped (online backend selected)")
     }
 
     /// Must run on `daemonQueue`. Shared backoff for a daemon that crashed and
     /// one that never launched.
     private func scheduleRelaunch() {
+        guard wantsDaemon else { return }
         relaunchAttempts += 1
         guard relaunchAttempts <= maxRelaunches else {
             gaveUp = true
@@ -348,7 +454,8 @@ final class SpeechEngine {
         let delay = min(0.5 * pow(2.0, Double(relaunchAttempts - 1)), 8.0)
         logToFile("relaunching daemon in \(delay)s (attempt \(relaunchAttempts)/\(maxRelaunches))")
         daemonQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.process == nil else { return }
+            guard let self, self.wantsDaemon, self.process == nil else { return }
+            self.daemonStarted = true
             self.launchDaemon()
         }
     }
@@ -408,8 +515,19 @@ final class SpeechEngine {
         audioURL: URL, language: String?,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
+        if AppSettings.asrBackend == .openAI {
+            RemoteASRClient.transcribe(
+                audioURL: audioURL, language: language,
+                prompt: PromptComposer.asrContext(SottoConfig.readHotwords()),
+                baseURL: AppSettings.asrAPIBaseURL,
+                apiKey: AppSettings.asrAPIKey,
+                model: AppSettings.asrAPIModel,
+                completion: completion)
+            return
+        }
         daemonQueue.async { [weak self] in
             guard let self else { return }
+            self.startDaemonIfNeeded()
             guard !self.gaveUp else {
                 completion(.failure(EngineError.daemonUnavailable))
                 return

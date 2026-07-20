@@ -24,7 +24,7 @@ MODELS = {
     "1.7B-4bit": f"{MS}/Qwen3-ASR-1___7B-4bit",
 }
 AUDIO_DIR = os.path.join(os.path.dirname(__file__), "audio")
-ENDPOINT = "https://u959634-b5da-c2aa2e6e.bjb1.seetacloud.com:8443/v1/chat/completions"
+ENDPOINT = "https://u959634-9069-d6489211.bjb1.seetacloud.com:8443/v1/chat/completions"
 REFINE_MODEL = "Qwen3.6-27B-UD-Q5_K_XL.gguf"
 
 SYSTEM = """你是一个语音转写文本的校对器。用户提供的内容是语音识别(ASR)的输出，可能含有识别错误。你的唯一任务是修正明显的识别错误并按规则规范数字，然后返回文本本身。

@@ -2,15 +2,11 @@ import AppKit
 import QuartzCore
 
 final class OverlayPanel: NSPanel {
-    private let label = NSTextField(labelWithString: "")
     private let waveformView = WaveformView()
 
+    private let capsuleWidth: CGFloat = 200
     private let capsuleHeight: CGFloat = 60
-    private let hPad: CGFloat = 26
     private let waveSize: CGFloat = 104   // wave is the centerpiece, not a corner accent
-    private let gap: CGFloat = 12
-    private let minWidth: CGFloat = 200
-    private let maxWidth: CGFloat = 560
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -46,34 +42,19 @@ final class OverlayPanel: NSPanel {
         shadowHost.layer?.shadowOpacity = 1
         cv.addSubview(shadowHost)
 
-        // Content: waveform + live caption. Laid out inside whatever glass host
-        // wraps it (native Liquid Glass on macOS 26+, vibrancy on older).
+        // The previous glass capsule, now reduced to its visual core: the live
+        // waveform is centered and no status caption is rendered.
         let content = NSView(frame: cv.bounds)
         content.autoresizingMask = [.width, .height]
 
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.spacing = gap
-        stack.alignment = .centerY
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
-
         waveformView.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(waveformView)
-
-        label.font = .systemFont(ofSize: 15, weight: .medium)
-        label.textColor = SottoTheme.primaryLabelColor
-        label.lineBreakMode = .byTruncatingTail
-        label.maximumNumberOfLines = 1
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        stack.addArrangedSubview(label)
+        content.addSubview(waveformView)
 
         NSLayoutConstraint.activate([
             waveformView.widthAnchor.constraint(equalToConstant: waveSize),
             waveformView.heightAnchor.constraint(equalToConstant: 44),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: hPad),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -hPad),
-            stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            waveformView.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            waveformView.centerYAnchor.constraint(equalTo: content.centerYAnchor),
         ])
 
         if #available(macOS 26.0, *) {
@@ -106,10 +87,15 @@ final class OverlayPanel: NSPanel {
 
     // MARK: - Public
 
-    /// Sets the listening-state accent colors (per capture mode). Takes effect
-    /// immediately when already listening.
-    func setListeningAccent(_ colors: [CGColor]) {
-        waveformView.listeningPalette = colors
+    enum CaptureStyle { case dictation, translate, qa }
+
+    /// Keep the old waveform while preserving the newer mode-specific colors.
+    func setCaptureStyle(_ style: CaptureStyle) {
+        switch style {
+        case .dictation: waveformView.listeningPalette = SottoTheme.State.listening
+        case .translate: waveformView.listeningPalette = SottoTheme.State.listeningTranslate
+        case .qa: waveformView.listeningPalette = SottoTheme.State.listeningQA
+        }
     }
 
     /// Bumped on every `show()`. Delayed dismissals capture the value they were
@@ -117,20 +103,18 @@ final class OverlayPanel: NSPanel {
     /// otherwise a stale timer would hide the next session's listening UI.
     private var generation = 0
 
-    func show(text: String = "正在聆听…") {
+    func show(text: String = "") {
         generation += 1
-        label.stringValue = text
         waveformView.state = .listening
         waveformView.isListening = true
         waveformView.isAnimating = true
 
-        let w = idealWidth(for: text)
         guard let screen = NSScreen.main else { return }
         let area = screen.visibleFrame
-        let x = area.midX - w / 2
+        let x = area.midX - capsuleWidth / 2
         let y = area.minY + 56
 
-        setFrame(NSRect(x: x, y: y - 14, width: w, height: capsuleHeight), display: true)
+        setFrame(NSRect(x: x, y: y - 14, width: capsuleWidth, height: capsuleHeight), display: true)
         alphaValue = 0
         orderFrontRegardless()
 
@@ -139,33 +123,31 @@ final class OverlayPanel: NSPanel {
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.175, 0.885, 0.32, 1.1)
             animator().alphaValue = 1
             animator().setFrame(
-                NSRect(x: x, y: y, width: w, height: capsuleHeight), display: true)
+                NSRect(x: x, y: y, width: capsuleWidth, height: capsuleHeight), display: true)
         }
     }
 
-    /// Generic text update that preserves the current wave state (used when the
-    /// caption changes within the same state, e.g. tap-to-lock keeping the listening status.
-    func updateText(_ text: String) {
-        label.stringValue = text
-        relayout()
-    }
+    /// Kept for call-site compatibility; the restored overlay is text-free.
+    func updateText(_ text: String) {}
 
     func showTranscribing() {
         waveformView.state = .transcribing
         waveformView.isListening = false
-        updateText("转写中…")
     }
 
-    func showRefining(_ text: String = "润色中…") {
+    func showRefining(_ text: String = "") {
         waveformView.state = .refining
         waveformView.isListening = false
-        updateText(text)
     }
 
     func showResult(_ text: String) {
         waveformView.state = .result
         waveformView.isListening = false
-        updateText(text)
+    }
+
+    func showError(_ text: String) {
+        waveformView.state = .cancelled
+        waveformView.isListening = false
     }
 
     /// Brief, non-error notice — no speech heard, or the content was filler-only.
@@ -173,7 +155,6 @@ final class OverlayPanel: NSPanel {
     func showCancelled(_ text: String) {
         waveformView.state = .cancelled
         waveformView.isListening = false
-        updateText(text)
     }
 
     func updateAudioLevel(_ level: Float) {
@@ -209,29 +190,6 @@ final class OverlayPanel: NSPanel {
         }
     }
 
-    // MARK: - Sizing
-
-    private func relayout() {
-        let w = idealWidth(for: label.stringValue)
-        guard let screen = NSScreen.main else { return }
-        let area = screen.visibleFrame
-        let x = area.midX - w / 2
-        let newFrame = NSRect(x: x, y: frame.origin.y, width: w, height: capsuleHeight)
-
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.46, 0.45, 0.94)
-            ctx.allowsImplicitAnimation = true
-            animator().setFrame(newFrame, display: true)
-        }
-    }
-
-    private func idealWidth(for text: String) -> CGFloat {
-        let attrs: [NSAttributedString.Key: Any] = [.font: label.font!]
-        let textW = ceil((text as NSString).size(withAttributes: attrs).width)
-        let total = hPad + waveSize + gap + textW + hPad
-        return min(max(total, minWidth), maxWidth)
-    }
 }
 
 // MARK: - Continuous audio waveform
