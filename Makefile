@@ -10,7 +10,7 @@ ENGINE_DIR := build_pyi/dist/asr_engine
 # Model installed into the user-owned Sotto home. Runtime lookup prefers this
 # path (`~/.sotto/models/...`) so config, prompt, and model all live together.
 MODEL_NAME := Qwen3-ASR-0.6B-8bit
-MODEL_SRC  := /Users/pengchunyou/.cache/modelscope/hub/models/mlx-community/Qwen3-ASR-0___6B-8bit
+MODEL_SRC  := $(HOME)/.cache/modelscope/hub/models/mlx-community/Qwen3-ASR-0___6B-8bit
 MODEL_DIR  := $(HOME)/.sotto/models
 MODEL_DEST := $(MODEL_DIR)/$(MODEL_NAME)
 
